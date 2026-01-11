@@ -22,6 +22,7 @@ load_dotenv()
 
 # Import routes
 from api.kb_routes import router as kb_router
+from api.rule_routes import router as rule_router
 
 
 # ============================================================
@@ -45,6 +46,10 @@ app.add_middleware(
 
 # Include routers
 app.include_router(kb_router)
+app.include_router(rule_router)
+
+#print("kb_router:", kb_router.prefix)
+#print("rule_router:", rule_router.prefix)
 
 
 # ============================================================
@@ -89,6 +94,7 @@ async def startup():
         "data/raw/documents/guidelines",
         "data/raw/documents/policies",
         "data/raw/documents/coding",
+        "data/rules",
     ]
     for d in dirs:
         os.makedirs(d, exist_ok=True)

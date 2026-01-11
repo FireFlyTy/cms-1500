@@ -783,16 +783,21 @@ async def update_document_metadata(doc_id: str, metadata: DocumentMetadata):
 
 @router.get("/codes")
 async def list_codes() -> List[CodeIndexItem]:
-    """Индекс всех кодов"""
+    """Индекс всех кодов - быстрая версия без загрузки страниц"""
 
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Get all unique codes
+    # Get all codes with document count in one query
     try:
         cursor.execute("""
-            SELECT DISTINCT code_pattern, code_type FROM document_codes
-            ORDER BY code_type, code_pattern
+            SELECT 
+                dc.code_pattern, 
+                dc.code_type,
+                COUNT(DISTINCT dc.document_id) as doc_count
+            FROM document_codes dc
+            GROUP BY dc.code_pattern, dc.code_type
+            ORDER BY dc.code_type, dc.code_pattern
         """)
     except:
         conn.close()
@@ -800,39 +805,13 @@ async def list_codes() -> List[CodeIndexItem]:
 
     codes = []
     for row in cursor.fetchall():
-        code, code_type = row[0], row[1]
+        code, code_type, doc_count = row[0], row[1], row[2]
 
-        # Get documents for this code
-        cursor.execute("""
-            SELECT d.file_hash, d.filename, d.doc_type, dc.description
-            FROM documents d
-            JOIN document_codes dc ON d.file_hash = dc.document_id
-            WHERE dc.code_pattern = ?
-        """, (code,))
-
-        documents = []
-        for doc_row in cursor.fetchall():
-            # Get pages from JSON
-            doc_json = load_document_json(doc_row[0])
-            pages = []
-            if doc_json:
-                for page in doc_json.get('pages', []):
-                    for page_code in page.get('codes', []):
-                        if page_code.get('code') == code:
-                            pages.append(page['page'])
-
-            documents.append({
-                'id': doc_row[0],
-                'filename': doc_row[1],
-                'doc_type': doc_row[2],
-                'pages': sorted(set(pages)),
-                'context': doc_row[3]
-            })
-
+        # Just return count, not full document list
         codes.append(CodeIndexItem(
             code=code,
             type=code_type or 'Unknown',
-            documents=documents
+            documents=[{'count': doc_count}]  # Placeholder for count
         ))
 
     conn.close()

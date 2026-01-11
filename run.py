@@ -27,6 +27,8 @@ from fastapi.staticfiles import StaticFiles
 
 # Import routes after path is set
 from api.kb_routes import router as kb_router
+from api.rule_routes import router as rule_router
+
 
 # ============================================================
 # APP SETUP
@@ -49,6 +51,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(kb_router)
+app.include_router(rule_router)
 
 # ============================================================
 # STATIC FILES

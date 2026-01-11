@@ -3,8 +3,10 @@ import {
   Database, FileText, Settings, Search, ChevronDown, ChevronRight,
   CheckCircle, Clock, AlertCircle, X, Eye, Edit, Folder, File,
   Code, Tag, BookOpen, Layers, ExternalLink, Upload, RefreshCw,
-  ZoomIn, ZoomOut, ChevronLeft, Hash, Play, Loader2, Filter, FolderSearch
+  ZoomIn, ZoomOut, ChevronLeft, Hash, Play, Loader2, Filter, FolderSearch,
+  Zap
 } from 'lucide-react';
+import RuleGeneration from './components/RuleGeneration';
 
 // API base URL
 const API_BASE = 'http://localhost:8000/api/kb';
@@ -261,10 +263,10 @@ const TopicTag = ({ topic }) => (
 // DOCUMENT VIEWER
 // ============================================================
 
-const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
+const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClick }) => {
   const [document, setDocument] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [selectedPage, setSelectedPage] = useState(1);
+  const [selectedPage, setSelectedPage] = useState(initialPage || 1);
   const [zoom, setZoom] = useState(100);
   const [activeTab, setActiveTab] = useState('content');
   const [expandedCode, setExpandedCode] = useState(null);
@@ -273,6 +275,7 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
   const [showPageCodes, setShowPageCodes] = useState(false);
   const [showPageTopics, setShowPageTopics] = useState(false);
   const [showPageMeds, setShowPageMeds] = useState(false);
+  const [codeSearch, setCodeSearch] = useState('');
 
   useEffect(() => {
     fetch(`${API_BASE}/documents/${docId}`)
@@ -280,12 +283,16 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
       .then(data => {
         setDocument(data);
         setLoading(false);
-        // Set first content page as selected
-        const firstContent = data.pages?.find(p => p.content);
-        if (firstContent) setSelectedPage(firstContent.page);
+        // Set initial page if provided, otherwise first content page
+        if (initialPage) {
+          setSelectedPage(initialPage);
+        } else {
+          const firstContent = data.pages?.find(p => p.content);
+          if (firstContent) setSelectedPage(firstContent.page);
+        }
       })
       .catch(() => setLoading(false));
-  }, [docId]);
+  }, [docId, initialPage]);
 
   if (loading) {
     return (
@@ -313,11 +320,16 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
   const allCodes = document.summary?.all_codes || [];
   const allTopics = document.summary?.topics || [];
   const allMedications = document.summary?.medications || [];
+  
+  // Filter codes by search
+  const filteredCodes = codeSearch 
+    ? allCodes.filter(c => c.code.toLowerCase().includes(codeSearch.toLowerCase()))
+    : allCodes;
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl w-full max-w-7xl h-[90vh] flex flex-col overflow-hidden shadow-2xl">
-
+        
         {/* Header */}
         <div className="border-b bg-slate-50">
           {/* Row 1: Title */}
@@ -336,7 +348,7 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
               <X className="w-5 h-5" />
             </button>
           </div>
-
+          
           {/* Row 2: Compact page info */}
           <div className="px-4 py-2 flex items-center gap-4 border-b border-slate-200">
             <div className="flex items-center gap-2">
@@ -356,7 +368,17 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
               />
               <span className="text-sm text-gray-500">/ {document.total_pages}</span>
             </div>
-
+            
+            {/* Highlight code indicator */}
+            {highlightCode && (
+              <div className="flex items-center gap-2 px-2 py-1 bg-yellow-100 rounded-lg">
+                <Search className="w-3 h-3 text-yellow-600" />
+                <span className="text-xs font-medium text-yellow-700">
+                  Highlighting: <code className="font-mono">{highlightCode}</code>
+                </span>
+              </div>
+            )}
+            
             {/* Content pages indicator */}
             <div className="flex items-center gap-2 text-xs text-gray-500">
               <span className="text-green-600 font-medium">
@@ -367,7 +389,7 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                 {(document.total_pages || 0) - (document.summary?.content_page_count || 0)} skipped
               </span>
             </div>
-
+            
             {currentPage && (
               <div className="ml-auto flex items-center gap-2">
                 {currentPage.skip_reason && (
@@ -377,12 +399,12 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
               </div>
             )}
           </div>
-
+          
           {/* Row 3: Codes, Topics, Meds - clickable to open tabs */}
           {(allCodes.length > 0 || allTopics.length > 0 || allMedications.length > 0) && (
             <div className="px-4 py-2 flex items-center gap-4 text-xs overflow-x-auto">
               {allCodes.length > 0 && (
-                <button
+                <button 
                   onClick={() => setActiveTab('codes')}
                   className="flex items-center gap-1.5 shrink-0 hover:bg-gray-100 rounded px-2 py-1 -mx-2"
                 >
@@ -398,9 +420,9 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                   )}
                 </button>
               )}
-
+              
               {allTopics.length > 0 && (
-                <button
+                <button 
                   onClick={() => setActiveTab('topics')}
                   className="flex items-center gap-1.5 shrink-0 border-l pl-4 hover:bg-gray-100 rounded px-2 py-1"
                 >
@@ -408,9 +430,9 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                   <span className="text-gray-500 font-medium">{allTopics.length} topics</span>
                 </button>
               )}
-
+              
               {allMedications.length > 0 && (
-                <button
+                <button 
                   onClick={() => setActiveTab('meds')}
                   className="flex items-center gap-1.5 shrink-0 border-l pl-4 hover:bg-gray-100 rounded px-2 py-1"
                 >
@@ -421,14 +443,14 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
             </div>
           )}
         </div>
-
+        
         {/* Content: PDF + Text */}
         <div className="flex-1 flex overflow-hidden">
           {/* Left: PDF */}
           <div className="w-1/2 border-r bg-slate-100 flex flex-col">
             <div className="p-2 border-b bg-white flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <button
+                <button 
                   onClick={() => setSelectedPage(p => Math.max(1, p - 1))}
                   disabled={selectedPage === 1}
                   className="p-1.5 hover:bg-gray-100 rounded disabled:opacity-30"
@@ -438,7 +460,7 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                 <span className="text-sm font-medium px-2">
                   {selectedPage} / {document.total_pages}
                 </span>
-                <button
+                <button 
                   onClick={() => setSelectedPage(p => Math.min(document.total_pages, p + 1))}
                   disabled={selectedPage === document.total_pages}
                   className="p-1.5 hover:bg-gray-100 rounded disabled:opacity-30"
@@ -467,17 +489,17 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                 </a>
               </div>
             </div>
-
+            
             {/* PDF Viewer with PDF.js */}
             <div className="flex-1 overflow-auto flex justify-center bg-slate-200">
-              <PdfPageViewer
+              <PdfPageViewer 
                 docId={docId}
                 page={selectedPage}
                 zoom={zoom}
               />
             </div>
           </div>
-
+          
           {/* Right: Tabs panel */}
           <div className="w-1/2 flex flex-col overflow-hidden bg-white">
             {/* Tabs */}
@@ -499,7 +521,7 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                 </button>
               ))}
             </div>
-
+            
             {/* Tab content */}
             <div className="flex-1 overflow-auto">
               {/* Content tab */}
@@ -525,8 +547,8 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                               {showPageCodes && (
                                 <div className="px-3 py-2 bg-gray-50 border-t flex flex-wrap gap-1">
                                   {currentPage.codes.map((c, i) => (
-                                    <span
-                                      key={i}
+                                    <span 
+                                      key={i} 
                                       className="text-xs px-2 py-0.5 bg-purple-100 text-purple-700 rounded font-mono cursor-pointer hover:bg-purple-200"
                                       onClick={() => {
                                         setActiveTab('codes');
@@ -540,7 +562,7 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                               )}
                             </div>
                           )}
-
+                          
                           {/* Topics section */}
                           {currentPage.topics?.length > 0 && (
                             <div className="border rounded">
@@ -556,7 +578,7 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                               {showPageTopics && (
                                 <div className="px-3 py-2 bg-gray-50 border-t flex flex-wrap gap-1">
                                   {currentPage.topics.map((t, i) => (
-                                    <span
+                                    <span 
                                       key={i}
                                       className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded cursor-pointer hover:bg-blue-200"
                                       onClick={() => {
@@ -571,7 +593,7 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                               )}
                             </div>
                           )}
-
+                          
                           {/* Medications section */}
                           {currentPage.medications?.length > 0 && (
                             <div className="border rounded">
@@ -587,7 +609,7 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                               {showPageMeds && (
                                 <div className="px-3 py-2 bg-gray-50 border-t flex flex-wrap gap-1">
                                   {currentPage.medications.map((m, i) => (
-                                    <span
+                                    <span 
                                       key={i}
                                       className="text-xs px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded cursor-pointer hover:bg-emerald-200"
                                       onClick={() => {
@@ -605,7 +627,21 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                         </div>
                       )}
                       <div className="whitespace-pre-wrap text-sm leading-relaxed text-gray-800">
-                        {currentPage.content}
+                        {highlightCode ? (
+                          // Highlight the code in content
+                          (() => {
+                            const content = currentPage.content;
+                            const regex = new RegExp(`(${highlightCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+                            const parts = content.split(regex);
+                            return parts.map((part, i) => 
+                              regex.test(part) ? (
+                                <mark key={i} className="bg-yellow-300 px-0.5 rounded">{part}</mark>
+                              ) : part
+                            );
+                          })()
+                        ) : (
+                          currentPage.content
+                        )}
                       </div>
                     </div>
                   ) : (
@@ -619,63 +655,85 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                   )}
                 </>
               )}
-
+              
               {/* Codes tab */}
               {activeTab === 'codes' && (
-                <div className="p-2">
-                  {allCodes.length === 0 ? (
-                    <p className="text-center text-gray-400 py-8">No codes found</p>
-                  ) : (
-                    <div className="space-y-1">
-                      {allCodes.map((codeInfo, i) => (
-                        <div key={i} className="border rounded">
-                          <button
-                            onClick={() => setExpandedCode(expandedCode === codeInfo.code ? null : codeInfo.code)}
-                            className="w-full px-3 py-2 flex items-center justify-between hover:bg-gray-50 text-left"
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono text-sm font-medium">{codeInfo.code}</span>
-                              <span className="text-xs px-1.5 py-0.5 bg-gray-100 rounded text-gray-500">{codeInfo.type}</span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs text-gray-400">{codeInfo.pages?.length || 0} pages</span>
-                              <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${expandedCode === codeInfo.code ? 'rotate-180' : ''}`} />
-                            </div>
-                          </button>
-                          {expandedCode === codeInfo.code && (
-                            <div className="px-3 py-2 bg-gray-50 border-t">
-                              <div className="flex flex-wrap gap-1">
-                                {codeInfo.pages?.map(pageNum => (
+                <div className="flex flex-col h-full">
+                  {/* Search */}
+                  <div className="p-2 border-b">
+                    <div className="relative">
+                      <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                      <input
+                        type="text"
+                        placeholder="Search codes..."
+                        value={codeSearch}
+                        onChange={(e) => setCodeSearch(e.target.value)}
+                        className="w-full pl-9 pr-3 py-2 border rounded-lg text-sm"
+                      />
+                    </div>
+                  </div>
+                  
+                  <div className="flex-1 overflow-auto p-2">
+                    {filteredCodes.length === 0 ? (
+                      <p className="text-center text-gray-400 py-8">No codes found</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {filteredCodes.map((codeInfo, i) => (
+                          <div key={i} className="border rounded">
+                            <button
+                              onClick={() => setExpandedCode(expandedCode === codeInfo.code ? null : codeInfo.code)}
+                              className="w-full px-3 py-2 flex items-center justify-between hover:bg-gray-50 text-left"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-sm font-medium">{codeInfo.code}</span>
+                                <span className="text-xs px-1.5 py-0.5 bg-gray-100 rounded text-gray-500">{codeInfo.type}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-gray-400">{codeInfo.pages?.length || 0} pages</span>
+                                <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${expandedCode === codeInfo.code ? 'rotate-180' : ''}`} />
+                              </div>
+                            </button>
+                            {/* Inline page buttons - always visible */}
+                            {codeInfo.pages?.length > 0 && (
+                              <div className="px-3 py-1.5 border-t bg-gray-50/50 flex flex-wrap gap-1">
+                                {codeInfo.pages?.slice(0, expandedCode === codeInfo.code ? undefined : 10).map(pageNum => (
                                   <button
                                     key={pageNum}
-                                    onClick={() => {
+                                    onClick={(e) => {
+                                      e.stopPropagation();
                                       setSelectedPage(pageNum);
                                       setActiveTab('content');
                                     }}
-                                    className={`px-2 py-1 text-xs rounded ${
+                                    className={`px-2 py-0.5 text-xs rounded transition-colors ${
                                       selectedPage === pageNum 
                                         ? 'bg-blue-600 text-white' 
-                                        : 'bg-white border hover:bg-blue-50'
+                                        : 'bg-white border hover:bg-blue-50 hover:border-blue-300'
                                     }`}
                                   >
                                     p.{pageNum}
                                   </button>
                                 ))}
+                                {!expandedCode !== codeInfo.code && codeInfo.pages?.length > 10 && (
+                                  <span className="text-xs text-gray-400 px-1">+{codeInfo.pages.length - 10}</span>
+                                )}
                               </div>
-                              {codeInfo.contexts?.length > 0 && (
-                                <p className="mt-2 text-xs text-gray-500 italic">
+                            )}
+                            {/* Expanded context */}
+                            {expandedCode === codeInfo.code && codeInfo.contexts?.length > 0 && (
+                              <div className="px-3 py-2 bg-gray-50 border-t">
+                                <p className="text-xs text-gray-500 italic">
                                   {codeInfo.contexts[0]}
                                 </p>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
-
+              
               {/* Topics tab */}
               {activeTab === 'topics' && (
                 <div className="p-2">
@@ -727,7 +785,7 @@ const DocumentViewer = ({ docId, onClose, onCodeClick }) => {
                   )}
                 </div>
               )}
-
+              
               {/* Medications tab */}
               {activeTab === 'meds' && (
                 <div className="p-2">
@@ -827,7 +885,7 @@ const CodeIndexView = ({ onDocumentClick, onClose }) => {
             <X className="w-5 h-5" />
           </button>
         </div>
-
+        
         {/* Content */}
         <div className="flex-1 flex overflow-hidden">
           {/* Left: List */}
@@ -835,7 +893,7 @@ const CodeIndexView = ({ onDocumentClick, onClose }) => {
             <div className="p-3 border-b space-y-2">
               <div className="relative">
                 <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input
+                <input 
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
@@ -857,7 +915,7 @@ const CodeIndexView = ({ onDocumentClick, onClose }) => {
                 ))}
               </div>
             </div>
-
+            
             <div className="flex-1 overflow-auto">
               {loading ? (
                 <div className="p-4 text-center">
@@ -885,14 +943,14 @@ const CodeIndexView = ({ onDocumentClick, onClose }) => {
                       </span>
                     </div>
                     <div className="text-xs text-gray-500 mt-1">
-                      {code.documents?.length || 0} document{(code.documents?.length || 0) !== 1 ? 's' : ''}
+                      {code.documents?.[0]?.count || code.documents?.length || 0} document{(code.documents?.[0]?.count || code.documents?.length || 0) !== 1 ? 's' : ''}
                     </div>
                   </button>
                 ))
               )}
             </div>
           </div>
-
+          
           {/* Right: Details */}
           <div className="flex-1 overflow-auto">
             {codeDetails ? (
@@ -909,7 +967,7 @@ const CodeIndexView = ({ onDocumentClick, onClose }) => {
                     </span>
                   </div>
                 </div>
-
+                
                 <div className="space-y-4">
                   {codeDetails.documents?.map(doc => (
                     <div key={doc.id} className="border rounded-lg overflow-hidden">
@@ -918,7 +976,7 @@ const CodeIndexView = ({ onDocumentClick, onClose }) => {
                           <File className="w-4 h-4 text-red-500" />
                           <span className="font-medium text-sm">{doc.filename}</span>
                         </div>
-                        <button
+                        <button 
                           onClick={() => onDocumentClick(doc.id)}
                           className="text-xs text-blue-600 hover:underline flex items-center gap-1"
                         >
@@ -927,15 +985,26 @@ const CodeIndexView = ({ onDocumentClick, onClose }) => {
                       </div>
                       <div className="p-3 space-y-2">
                         {doc.pages?.map((pageInfo, i) => (
-                          <div key={i} className="text-xs">
-                            <span className="text-gray-500">Page {pageInfo.page}:</span>
+                          <button
+                            key={i}
+                            onClick={() => onDocumentClick(doc.id, pageInfo.page, codeDetails.code)}
+                            className="w-full text-left hover:bg-blue-50 p-2 rounded-lg transition-colors group"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-medium text-blue-600 group-hover:underline">
+                                Page {pageInfo.page}
+                              </span>
+                              <ChevronRight className="w-3 h-3 text-gray-300 group-hover:text-blue-400" />
+                            </div>
                             {pageInfo.context && (
-                              <span className="ml-2 italic text-gray-600">"{pageInfo.context}"</span>
+                              <p className="text-xs italic text-gray-500 mt-1 truncate">
+                                "{pageInfo.context}"
+                              </p>
                             )}
                             {pageInfo.content_preview && (
-                              <p className="mt-1 text-gray-400 truncate">{pageInfo.content_preview}</p>
+                              <p className="text-xs text-gray-400 mt-1 truncate">{pageInfo.content_preview}</p>
                             )}
-                          </div>
+                          </button>
                         ))}
                       </div>
                     </div>
@@ -965,22 +1034,22 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
   // Динамически определяем папки из filepath документов
   const extractFolder = (filepath) => {
     if (!filepath) return 'other';
-
+    
     // Разбиваем путь на части
     const parts = filepath.replace(/^\//, '').split('/');
-
+    
     // Если только имя файла без папки
     if (parts.length === 1) return 'other';
-
+    
     // Берём папки (всё кроме последнего элемента - имени файла)
     const folderParts = parts.slice(0, -1);
-
+    
     // Ищем известную папку
     const knownFolders = ['guidelines', 'policies', 'coding', 'codebooks'];
     for (const folder of knownFolders) {
       if (folderParts.includes(folder)) return folder;
     }
-
+    
     // Возвращаем первую папку в пути
     return folderParts[0] || 'other';
   };
@@ -1013,7 +1082,7 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
   const [parseProgress, setParseProgress] = useState({}); // {docId: {percent, message}}
 
   const toggleFolder = (folder) => {
-    setExpandedFolders(prev =>
+    setExpandedFolders(prev => 
       prev.includes(folder) ? prev.filter(f => f !== folder) : [...prev, folder]
     );
   };
@@ -1035,9 +1104,9 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
     const folderDocs = documentsByFolder[folder] || [];
     // Выбираем все документы в папке (включая уже парсенные для reparse)
     const docIds = folderDocs.map(d => d.id);
-
+    
     const allSelected = docIds.every(id => selectedDocs.has(id));
-
+    
     setSelectedDocs(prev => {
       const next = new Set(prev);
       if (allSelected) {
@@ -1052,25 +1121,25 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
   const handleParse = async (e, docId, force = false) => {
     e.stopPropagation();
     if (isGlobalParsing) return;
-
+    
     setParsing(docId);
     setParseProgress(prev => ({ ...prev, [docId]: { pages_done: 0, total_pages: 0 } }));
-
+    
     try {
       const forceParam = force ? '&force=true' : '';
       const eventSource = new EventSource(`${API_BASE}/documents/${docId}/parse-stream?_=${Date.now()}${forceParam}`);
-
+      
       eventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
-
-        setParseProgress(prev => ({
-          ...prev,
-          [docId]: {
-            pages_done: data.pages_done || 0,
-            total_pages: data.total_pages || 0
-          }
+        
+        setParseProgress(prev => ({ 
+          ...prev, 
+          [docId]: { 
+            pages_done: data.pages_done || 0, 
+            total_pages: data.total_pages || 0 
+          } 
         }));
-
+        
         if (data.status === 'complete' || data.status === 'already_parsed' || data.status === 'error') {
           eventSource.close();
           setParsing(null);
@@ -1082,7 +1151,7 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
           onRefresh?.();
         }
       };
-
+      
       eventSource.onerror = () => {
         eventSource.close();
         setParsing(null);
@@ -1092,7 +1161,7 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
           return next;
         });
       };
-
+      
     } catch (err) {
       console.error('Parse failed:', err);
       setParsing(null);
@@ -1109,14 +1178,14 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
       {folders.map(folder => {
         const folderDocs = documentsByFolder[folder] || [];
         if (folderDocs.length === 0) return null;
-
-        const allSelected = folderDocs.length > 0 &&
+        
+        const allSelected = folderDocs.length > 0 && 
           folderDocs.every(d => selectedDocs.has(d.id));
-
+        
         return (
           <div key={folder}>
             <div className="flex items-center gap-2 mb-2">
-              <button
+              <button 
                 onClick={() => toggleFolder(folder)}
                 className="flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-gray-900"
               >
@@ -1125,7 +1194,7 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                 {folder}/
                 <span className="text-gray-400 font-normal">({folderDocs.length})</span>
               </button>
-
+              
               {expandedFolders.includes(folder) && (
                 <button
                   onClick={() => toggleSelectAll(folder)}
@@ -1135,14 +1204,14 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                 </button>
               )}
             </div>
-
+            
             {expandedFolders.includes(folder) && (
               <div className="ml-6 space-y-2">
                 {folderDocs.map(doc => {
                   const isCurrentlyParsing = globalParseProgress?.currentDocId === doc.id;
-
+                  
                   return (
-                  <div
+                  <div 
                     key={doc.id}
                     className={`border rounded-lg p-3 hover:shadow-md transition-shadow bg-white ${
                       selectedDocs.has(doc.id) ? 'ring-2 ring-blue-500 border-blue-300' : ''
@@ -1158,7 +1227,7 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                           disabled={isGlobalParsing}
                           className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 disabled:opacity-50"
                         />
-                        <div
+                        <div 
                           className="flex items-center gap-2 cursor-pointer"
                           onClick={() => onDocumentClick(doc.id)}
                         >
@@ -1178,7 +1247,7 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                               <div className="flex items-center gap-2">
                                 <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
                                 <span className="text-xs text-blue-600 font-mono">
-                                  {isCurrentlyParsing
+                                  {isCurrentlyParsing 
                                     ? `${globalParseProgress.pages_done}/${globalParseProgress.total_pages}`
                                     : `${parseProgress[doc.id]?.pages_done || 0}/${parseProgress[doc.id]?.total_pages || doc.total_pages || '?'}`
                                   }
@@ -1207,7 +1276,7 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                               <div className="flex items-center gap-2">
                                 <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
                                 <span className="text-xs text-blue-600 font-mono">
-                                  {isCurrentlyParsing
+                                  {isCurrentlyParsing 
                                     ? `${globalParseProgress.pages_done}/${globalParseProgress.total_pages}`
                                     : `${parseProgress[doc.id]?.pages_done || 0}/${parseProgress[doc.id]?.total_pages || doc.total_pages || '?'}`
                                   }
@@ -1232,13 +1301,13 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                         )}
                       </div>
                     </div>
-
+                    
                     {doc.codes?.length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1">
                         {doc.codes.slice(0, 5).map((c, i) => (
-                          <CodeTag
-                            key={i}
-                            code={c.code}
+                          <CodeTag 
+                            key={i} 
+                            code={c.code} 
                             type={c.type}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1289,7 +1358,7 @@ const UploadZone = ({ onUploadComplete }) => {
         body: formData
       });
       const data = await res.json();
-
+      
       if (data.status === 'success' || data.status === 'exists') {
         onUploadComplete?.();
       }
@@ -1303,7 +1372,7 @@ const UploadZone = ({ onUploadComplete }) => {
 
   return (
     <div className="flex items-center gap-2">
-      <select
+      <select 
         value={folder}
         onChange={(e) => setFolder(e.target.value)}
         className="px-3 py-1.5 border rounded text-sm"
@@ -1314,7 +1383,7 @@ const UploadZone = ({ onUploadComplete }) => {
         <option value="coding">coding/</option>
         <option value="codebooks">codebooks/</option>
       </select>
-
+      
       <label className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg cursor-pointer transition-colors ${
         uploading ? 'bg-gray-100 text-gray-400' : 'bg-blue-600 text-white hover:bg-blue-700'
       }`}>
@@ -1329,8 +1398,8 @@ const UploadZone = ({ onUploadComplete }) => {
             Upload PDF
           </>
         )}
-        <input
-          type="file"
+        <input 
+          type="file" 
           accept=".pdf"
           onChange={handleUpload}
           disabled={uploading}
@@ -1348,14 +1417,17 @@ const UploadZone = ({ onUploadComplete }) => {
 export default function KnowledgeBaseApp() {
   const { documents, loading, refetch } = useDocuments();
   const stats = useStats();
-
+  
+  const [activeTab, setActiveTab] = useState('kb'); // 'kb' | 'rules'
   const [selectedDocId, setSelectedDocId] = useState(null);
+  const [initialPage, setInitialPage] = useState(null);
+  const [highlightCode, setHighlightCode] = useState(null);
   const [showCodeIndex, setShowCodeIndex] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [parsingAll, setParsingAll] = useState(false);
-  const [parseAllProgress, setParseAllProgress] = useState({
-    currentDoc: 0,
-    totalDocs: 0,
+  const [parseAllProgress, setParseAllProgress] = useState({ 
+    currentDoc: 0, 
+    totalDocs: 0, 
     currentFile: '',
     currentDocId: null,
     pages_done: 0,
@@ -1366,8 +1438,10 @@ export default function KnowledgeBaseApp() {
   // Global parsing state - blocks all parse buttons
   const isGlobalParsing = parsingAll;
 
-  const handleDocumentClick = (docId) => {
+  const handleDocumentClick = (docId, page = null, highlightCode = null) => {
     setSelectedDocId(docId);
+    setInitialPage(page);
+    setHighlightCode(highlightCode);
     setShowCodeIndex(false);
   };
 
@@ -1391,7 +1465,7 @@ export default function KnowledgeBaseApp() {
   const handleParseAll = async () => {
     // Parse selected or all unparsed
     let toParse = [];
-
+    
     if (selectedDocs.size > 0) {
       // Parse selected documents (including reparsing already parsed)
       toParse = documents.filter(d => selectedDocs.has(d.id));
@@ -1399,57 +1473,57 @@ export default function KnowledgeBaseApp() {
       // Parse all unparsed
       toParse = documents.filter(d => !d.parsed_at);
     }
-
+    
     if (toParse.length === 0) return;
-
+    
     setParsingAll(true);
     const totalDocs = toParse.length;
-
+    
     for (let i = 0; i < toParse.length; i++) {
       const doc = toParse[i];
-      setParseAllProgress({
-        currentDoc: i + 1,
-        totalDocs,
+      setParseAllProgress({ 
+        currentDoc: i + 1, 
+        totalDocs, 
         currentFile: doc.filename,
         currentDocId: doc.id,
         pages_done: 0,
         total_pages: doc.total_pages || 0
       });
-
+      
       try {
         // force=true для перепарсинга уже парсенных документов
         const forceParam = doc.parsed_at ? '&force=true' : '';
-
+        
         // Используем SSE для отслеживания прогресса
         await new Promise((resolve, reject) => {
           const eventSource = new EventSource(`${API_BASE}/documents/${doc.id}/parse-stream?_=${Date.now()}${forceParam}`);
-
+          
           eventSource.onmessage = (event) => {
             const data = JSON.parse(event.data);
-
-            setParseAllProgress(prev => ({
-              ...prev,
+            
+            setParseAllProgress(prev => ({ 
+              ...prev, 
               pages_done: data.pages_done || 0,
               total_pages: data.total_pages || prev.total_pages
             }));
-
+            
             if (data.status === 'complete' || data.status === 'already_parsed' || data.status === 'error') {
               eventSource.close();
               resolve();
             }
           };
-
+          
           eventSource.onerror = () => {
             eventSource.close();
             resolve(); // Continue even on error
           };
         });
-
+        
       } catch (err) {
         console.error(`Parse failed for ${doc.filename}:`, err);
       }
     }
-
+    
     setParsingAll(false);
     setParseAllProgress({ currentDoc: 0, totalDocs: 0, currentFile: '', currentDocId: null, pages_done: 0, total_pages: 0 });
     setSelectedDocs(new Set()); // Clear selection after parsing
@@ -1460,13 +1534,48 @@ export default function KnowledgeBaseApp() {
     <div className="min-h-screen bg-gray-100">
       {/* Header */}
       <header className="bg-white border-b">
-        <div className="max-w-7xl mx-auto px-4 py-4">
-          <h1 className="text-xl font-bold text-gray-900">CMS-1500 Rule Builder</h1>
-          <p className="text-sm text-gray-500">Knowledge Base Management</p>
+        <div className="max-w-7xl mx-auto px-4">
+          <div className="flex items-center justify-between py-4">
+            <div>
+              <h1 className="text-xl font-bold text-gray-900">CMS-1500 Rule Builder</h1>
+              <p className="text-sm text-gray-500">Knowledge Base & Rule Generation</p>
+            </div>
+          </div>
+          
+          {/* Tabs */}
+          <div className="flex gap-1">
+            <button
+              onClick={() => setActiveTab('kb')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'kb'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <Database className="w-4 h-4" />
+                Knowledge Base
+              </span>
+            </button>
+            <button
+              onClick={() => setActiveTab('rules')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'rules'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <Zap className="w-4 h-4" />
+                Rule Generation
+              </span>
+            </button>
+          </div>
         </div>
       </header>
-
-      {/* Main */}
+      
+      {/* Content */}
+      {activeTab === 'kb' ? (
       <main className="max-w-7xl mx-auto px-4 py-6">
         {/* Stats Cards */}
         <div className="grid grid-cols-4 gap-4 mb-6">
@@ -1481,7 +1590,7 @@ export default function KnowledgeBaseApp() {
               </div>
             </div>
           </div>
-
+          
           <div className="bg-white rounded-lg p-4 border">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-orange-100 rounded-lg">
@@ -1493,7 +1602,7 @@ export default function KnowledgeBaseApp() {
               </div>
             </div>
           </div>
-
+          
           <div className="bg-white rounded-lg p-4 border">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-blue-100 rounded-lg">
@@ -1507,9 +1616,9 @@ export default function KnowledgeBaseApp() {
               </div>
             </div>
           </div>
-
+          
           <div className="bg-white rounded-lg p-4 border">
-            <button
+            <button 
               onClick={() => setShowCodeIndex(true)}
               className="w-full h-full flex items-center justify-center gap-2 text-blue-600 hover:text-blue-700 font-medium"
             >
@@ -1518,7 +1627,7 @@ export default function KnowledgeBaseApp() {
             </button>
           </div>
         </div>
-
+        
         {/* Documents Section */}
         <div className="bg-white rounded-lg border">
           <div className="p-4 border-b flex items-center justify-between">
@@ -1527,7 +1636,7 @@ export default function KnowledgeBaseApp() {
               Documents
             </h2>
             <div className="flex items-center gap-2">
-              <button
+              <button 
                 onClick={handleScan}
                 disabled={scanning || parsingAll}
                 className="px-3 py-1.5 bg-green-600 text-white hover:bg-green-700 rounded text-sm flex items-center gap-1 disabled:opacity-50"
@@ -1536,7 +1645,7 @@ export default function KnowledgeBaseApp() {
                 {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderSearch className="w-4 h-4" />}
                 Scan
               </button>
-              <button
+              <button 
                 onClick={handleParseAll}
                 disabled={parsingAll || (selectedDocs.size === 0 && documents.filter(d => !d.parsed_at).length === 0)}
                 className="px-3 py-1.5 bg-blue-600 text-white hover:bg-blue-700 rounded text-sm flex items-center gap-1 disabled:opacity-50"
@@ -1562,7 +1671,7 @@ export default function KnowledgeBaseApp() {
                 )}
               </button>
               {selectedDocs.size > 0 && !parsingAll && (
-                <button
+                <button 
                   onClick={() => setSelectedDocs(new Set())}
                   className="px-2 py-1.5 text-gray-600 hover:bg-gray-100 rounded text-sm"
                   title="Clear selection"
@@ -1571,7 +1680,7 @@ export default function KnowledgeBaseApp() {
                 </button>
               )}
               <UploadZone onUploadComplete={refetch} />
-              <button
+              <button 
                 onClick={refetch}
                 className="p-2 hover:bg-gray-100 rounded-lg"
                 title="Refresh"
@@ -1580,7 +1689,7 @@ export default function KnowledgeBaseApp() {
               </button>
             </div>
           </div>
-
+          
           <div className="p-4">
             {loading ? (
               <div className="py-8 text-center">
@@ -1594,7 +1703,7 @@ export default function KnowledgeBaseApp() {
                 <p className="text-sm mt-1">Upload a PDF to get started</p>
               </div>
             ) : (
-              <DocumentList
+              <DocumentList 
                 documents={documents}
                 onDocumentClick={handleDocumentClick}
                 onCodeClick={handleCodeClick}
@@ -1608,12 +1717,25 @@ export default function KnowledgeBaseApp() {
           </div>
         </div>
       </main>
+      ) : (
+        <main className="max-w-7xl mx-auto px-4 py-6">
+          <div className="bg-white rounded-lg border h-[calc(100vh-180px)]">
+            <RuleGeneration />
+          </div>
+        </main>
+      )}
       
       {/* Document Viewer Modal */}
       {selectedDocId && (
         <DocumentViewer 
           docId={selectedDocId}
-          onClose={() => setSelectedDocId(null)}
+          initialPage={initialPage}
+          highlightCode={highlightCode}
+          onClose={() => {
+            setSelectedDocId(null);
+            setInitialPage(null);
+            setHighlightCode(null);
+          }}
           onCodeClick={handleCodeClick}
         />
       )}
