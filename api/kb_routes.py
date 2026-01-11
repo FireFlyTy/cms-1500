@@ -920,37 +920,17 @@ async def list_codes() -> List[CodeIndexItem]:
         conn.close()
         return []
 
-    # Use dict to merge normalized duplicates (E11.* + E11.% → E11.%)
-    codes_map = {}
-
+    codes = []
     for row in cursor.fetchall():
         code, code_type, doc_count = row[0], row[1], row[2]
 
-        # Normalize the code
-        normalized = normalize_code_pattern(code)
-        key = (normalized, code_type or 'Unknown')
-
-        if key in codes_map:
-            # Merge counts
-            codes_map[key]['count'] += doc_count
-        else:
-            codes_map[key] = {
-                'code': normalized,
-                'type': code_type or 'Unknown',
-                'count': doc_count
-            }
-
-    conn.close()
-
-    # Convert to list
-    codes = []
-    for key, data in sorted(codes_map.items(), key=lambda x: (x[0][1], x[0][0])):
         codes.append(CodeIndexItem(
-            code=data['code'],
-            type=data['type'],
-            documents=[{'count': data['count']}]
+            code=code,
+            type=code_type or 'Unknown',
+            documents=[{'count': doc_count}]
         ))
 
+    conn.close()
     return codes
 
 
@@ -1134,13 +1114,16 @@ async def get_stats():
 
 
 @router.post("/migrate-codes")
-async def migrate_codes():
+async def migrate_codes(force: bool = False):
     """
     Миграция:
     1. Добавляет колонку page_numbers если её нет
     2. Нормализует wildcards (E11.* → E11.%)
     3. Заполняет page_numbers из JSON файлов
     4. Удаляет дубликаты
+
+    Query params:
+        force=true - сбросить и перезаполнить все page_numbers
     """
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1151,6 +1134,7 @@ async def migrate_codes():
         'rows_updated': 0,
         'duplicates_removed': 0,
         'pages_populated': 0,
+        'pages_reset': 0,
         'total_unique_codes': 0
     }
 
@@ -1163,6 +1147,12 @@ async def migrate_codes():
         # Column already exists
         pass
 
+    # 1b. If force=true, reset all page_numbers
+    if force:
+        cursor.execute("UPDATE document_codes SET page_numbers = NULL")
+        results['pages_reset'] = cursor.rowcount
+        conn.commit()
+
     # 2. Normalize wildcards
     cursor.execute("""
         SELECT DISTINCT code_pattern 
@@ -1171,6 +1161,7 @@ async def migrate_codes():
            OR code_pattern LIKE '%.-'
            OR code_pattern LIKE '%.x'
            OR code_pattern LIKE '%.X'
+           OR (code_pattern LIKE '%*' AND code_pattern NOT LIKE '%.*')
     """)
 
     codes_to_fix = cursor.fetchall()
@@ -1211,30 +1202,54 @@ async def migrate_codes():
     """)
     docs_to_update = [row[0] for row in cursor.fetchall()]
 
+    results['docs_to_process'] = len(docs_to_update)
+    results['docs_json_found'] = 0
+
     for doc_id in docs_to_update:
         doc_json = load_document_json(doc_id)
         if not doc_json:
             continue
 
-        # Collect pages for each code
-        code_pages = {}
+        results['docs_json_found'] += 1
+
+        # Collect pages for each code (both original and normalized)
+        code_pages = {}  # normalized_code -> set of pages
+        original_codes = {}  # normalized_code -> original_code (for fallback)
+
         for page in doc_json.get('pages', []):
             page_num = page.get('page', 0)
             for code_info in page.get('codes', []):
-                code = normalize_code_pattern(code_info.get('code', ''))
-                if code not in code_pages:
-                    code_pages[code] = set()
-                code_pages[code].add(page_num)
+                original_code = code_info.get('code', '').upper().strip()
+                normalized_code = normalize_code_pattern(original_code)
 
-        # Update records
-        for code, pages in code_pages.items():
+                if normalized_code not in code_pages:
+                    code_pages[normalized_code] = set()
+                    original_codes[normalized_code] = original_code
+
+                code_pages[normalized_code].add(page_num)
+
+        # Update records - try both normalized and original code patterns
+        for normalized_code, pages in code_pages.items():
             pages_json = json.dumps(sorted(pages))
+            original_code = original_codes.get(normalized_code, normalized_code)
+
+            # Try normalized first
             cursor.execute("""
                 UPDATE document_codes 
                 SET page_numbers = ?
-                WHERE document_id = ? AND code_pattern = ?
-            """, (pages_json, doc_id, code))
-            results['pages_populated'] += cursor.rowcount
+                WHERE document_id = ? AND code_pattern = ? AND page_numbers IS NULL
+            """, (pages_json, doc_id, normalized_code))
+
+            if cursor.rowcount > 0:
+                results['pages_populated'] += cursor.rowcount
+            else:
+                # Fallback: try original code
+                cursor.execute("""
+                    UPDATE document_codes 
+                    SET page_numbers = ?
+                    WHERE document_id = ? AND code_pattern = ? AND page_numbers IS NULL
+                """, (pages_json, doc_id, original_code))
+                results['pages_populated'] += cursor.rowcount
 
     conn.commit()
 
