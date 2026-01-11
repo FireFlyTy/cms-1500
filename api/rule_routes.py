@@ -12,8 +12,14 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from src.utils.code_categories import get_code_category, group_codes_by_category, get_all_categories
+from src.utils.code_categories import get_code_category, group_codes_by_category
 from src.db.connection import get_db_connection
+
+# NEW: Import generators
+from src.generators import (
+    build_sources_context,
+    RuleGenerator,
+)
 
 router = APIRouter(prefix="/api/rules", tags=["rules"])
 
@@ -30,9 +36,11 @@ os.makedirs(RULES_DIR, exist_ok=True)
 # ============================================================
 
 class GenerateRuleRequest(BaseModel):
-    code: str
+    code: str = ""
     code_type: str = "ICD-10"
     document_ids: Optional[List[str]] = None  # If None, use all relevant docs
+    parallel_validators: bool = True  # Run Mentor || RedTeam in parallel
+    thinking_budget: int = 10000
 
 
 class BatchGenerateRequest(BaseModel):
@@ -48,23 +56,22 @@ def get_all_codes_from_db() -> List[Dict]:
     """Получает все коды из базы данных с информацией о документах."""
     conn = get_db_connection()
     cursor = conn.cursor()
-
+    
     cursor.execute("""
         SELECT 
-            dc.code_pattern as code,
+            dc.code_pattern,
             dc.code_type,
             dc.document_id,
             d.filename
         FROM document_codes dc
         JOIN documents d ON dc.document_id = d.file_hash
         WHERE d.parsed_at IS NOT NULL
-        GROUP BY dc.code_pattern, dc.code_type, dc.document_id
         ORDER BY dc.code_pattern
     """)
-
+    
     rows = cursor.fetchall()
     conn.close()
-
+    
     # Aggregate by code
     codes_map = {}
     for row in rows:
@@ -72,88 +79,65 @@ def get_all_codes_from_db() -> List[Dict]:
         if code not in codes_map:
             codes_map[code] = {
                 'code': code,
-                'type': row[1] or 'ICD-10',
+                'type': row[1],
                 'documents': [],
                 'total_pages': 0
             }
-
+        
         codes_map[code]['documents'].append({
             'id': row[2],
             'filename': row[3]
         })
-        codes_map[code]['total_pages'] += 1
-
+    
     return list(codes_map.values())
 
 
 def get_rule_status(code: str) -> Dict:
     """Проверяет статус правила для кода."""
+    # Check new versioned structure first
+    code_dir = code.replace(".", "_").replace("/", "_")
+    versioned_path = os.path.join(RULES_DIR, code_dir)
+    
+    if os.path.exists(versioned_path):
+        # Find latest version
+        versions = [d for d in os.listdir(versioned_path) if d.startswith('v')]
+        if versions:
+            latest = sorted(versions, key=lambda x: int(x[1:]))[-1]
+            rule_path = os.path.join(versioned_path, latest, "rule.json")
+            if os.path.exists(rule_path):
+                with open(rule_path, 'r') as f:
+                    rule = json.load(f)
+                return {
+                    'has_rule': True,
+                    'version': rule.get('version', 1),
+                    'created_at': rule.get('created_at'),
+                    'validation_status': rule.get('validation_status', 'unknown'),
+                    'path': rule_path
+                }
+    
+    # Fallback to old flat structure
     rule_path = os.path.join(RULES_DIR, f"{code.replace('.', '_')}.json")
-
+    
     if os.path.exists(rule_path):
         with open(rule_path, 'r') as f:
             rule = json.load(f)
         return {
             'has_rule': True,
-            'is_mock': rule.get('is_mock', False),
             'version': rule.get('version', '1.0'),
             'created_at': rule.get('created_at'),
             'updated_at': rule.get('updated_at')
         }
-
-    return {'has_rule': False, 'is_mock': False}
+    
+    return {'has_rule': False}
 
 
 def get_guideline_text_for_code(code: str, document_ids: Optional[List[str]] = None) -> str:
     """
     Собирает текст гайдлайнов для кода из всех релевантных документов.
-    Ищет страницы где упоминается код в content.json.
+    DEPRECATED: Use build_sources_context() instead for multi-doc support.
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # Get documents that have this code (document_id = file_hash)
-    if document_ids:
-        placeholders = ','.join('?' * len(document_ids))
-        cursor.execute(f"""
-            SELECT DISTINCT dc.document_id
-            FROM document_codes dc
-            JOIN documents d ON dc.document_id = d.file_hash
-            WHERE dc.code_pattern = ? AND dc.document_id IN ({placeholders})
-        """, [code] + document_ids)
-    else:
-        cursor.execute("""
-            SELECT DISTINCT dc.document_id
-            FROM document_codes dc
-            JOIN documents d ON dc.document_id = d.file_hash
-            WHERE dc.code_pattern = ?
-        """, (code,))
-
-    rows = cursor.fetchall()
-    conn.close()
-
-    if not rows:
-        return ""
-
-    # Load content from each document and find pages with this code
-    guideline_parts = []
-
-    for (file_hash,) in rows:
-        content_path = os.path.join(DOCUMENTS_DIR, file_hash, 'content.json')
-
-        if not os.path.exists(content_path):
-            continue
-
-        with open(content_path, 'r') as f:
-            doc_data = json.load(f)
-
-        # Find pages where this code appears
-        for page_data in doc_data.get('pages', []):
-            page_codes = [c.get('code') for c in page_data.get('codes', [])]
-            if code in page_codes and page_data.get('content'):
-                guideline_parts.append(f"## Page {page_data['page']}\n{page_data['content']}")
-
-    return "\n\n".join(guideline_parts)
+    sources_ctx = build_sources_context(code, document_ids)
+    return sources_ctx.sources_text
 
 
 # ============================================================
@@ -167,26 +151,26 @@ async def get_categories():
     """
     all_codes = get_all_codes_from_db()
     grouped = group_codes_by_category(all_codes)
-
+    
     categories = []
     for category_name, codes in grouped.items():
         # Count rules
         codes_with_rules = sum(1 for c in codes if get_rule_status(c['code'])['has_rule'])
-
-        # Get color from first code's category_info
-        color = codes[0]['category_info'].get('color', '#6B7280') if codes else '#6B7280'
-
+        
+        # Get icon from first code
+        icon = codes[0]['category_info']['icon'] if codes else '📄'
+        
         categories.append({
             'name': category_name,
-            'color': color,
+            'icon': icon,
             'total_codes': len(codes),
             'codes_with_rules': codes_with_rules,
             'coverage_percent': round(codes_with_rules / len(codes) * 100) if codes else 0
         })
-
+    
     # Sort by name
     categories.sort(key=lambda x: x['name'])
-
+    
     return {
         'categories': categories,
         'total_codes': len(all_codes),
@@ -198,45 +182,32 @@ async def get_categories():
 async def get_codes_by_category(category_name: str):
     """
     Получает коды в категории с информацией о документах и статусе правил.
-    Группирует по типу: diagnoses (ICD-10) и procedures (CPT/HCPCS).
     """
     all_codes = get_all_codes_from_db()
     grouped = group_codes_by_category(all_codes)
-
+    
     if category_name not in grouped:
         raise HTTPException(status_code=404, detail=f"Category '{category_name}' not found")
-
+    
     codes = grouped[category_name]
-
-    # Separate into diagnoses and procedures
-    diagnoses = []
-    procedures = []
-
+    
+    # Enrich with rule status
+    result = []
     for code_info in codes:
         rule_status = get_rule_status(code_info['code'])
-        enriched = {
+        result.append({
             **code_info,
             'rule_status': rule_status
-        }
-
-        code_type = code_info.get('type', '').upper()
-        if code_type in ('ICD-10', 'ICD10', 'ICD'):
-            diagnoses.append(enriched)
-        else:  # CPT, HCPCS, etc.
-            procedures.append(enriched)
-
+        })
+    
     # Sort by code
-    diagnoses.sort(key=lambda x: x['code'])
-    procedures.sort(key=lambda x: x['code'])
-
+    result.sort(key=lambda x: x['code'])
+    
     return {
         'category': category_name,
-        'diagnoses': diagnoses,
-        'procedures': procedures,
-        'total': len(diagnoses) + len(procedures),
-        'total_diagnoses': len(diagnoses),
-        'total_procedures': len(procedures),
-        'with_rules': sum(1 for c in diagnoses + procedures if c['rule_status']['has_rule'])
+        'codes': result,
+        'total': len(result),
+        'with_rules': sum(1 for c in result if c['rule_status']['has_rule'])
     }
 
 
@@ -247,74 +218,98 @@ async def get_code_details(code: str):
     """
     conn = get_db_connection()
     cursor = conn.cursor()
-
-    # Get documents that have this code (document_id = file_hash)
+    
     cursor.execute("""
-        SELECT 
+        SELECT DISTINCT
             dc.code_pattern,
             dc.code_type,
-            dc.document_id as file_hash,
-            d.filename
+            dc.description,
+            dc.document_id,
+            d.filename,
+            d.file_hash
         FROM document_codes dc
         JOIN documents d ON dc.document_id = d.file_hash
-        WHERE dc.code_pattern = ? AND d.parsed_at IS NOT NULL
+        WHERE dc.code_pattern = ?
         ORDER BY d.filename
     """, (code,))
-
+    
     rows = cursor.fetchall()
     conn.close()
-
+    
     if not rows:
         raise HTTPException(status_code=404, detail=f"Code '{code}' not found")
-
-    # Aggregate documents and find pages with this code from content.json
+    
+    # Group by document and load page info from content.json
     documents = {}
     contexts = []
-    code_type = rows[0][1] or 'ICD-10'
-
+    code_type = rows[0][1]
+    
     for row in rows:
-        file_hash = row[2]
-        filename = row[3]
-
+        file_hash = row[5]
         if file_hash not in documents:
             documents[file_hash] = {
-                'id': file_hash,
-                'filename': filename,
+                'id': row[3],
+                'filename': row[4],
                 'file_hash': file_hash,
+                'doc_id': file_hash[:8] if file_hash else None,
                 'pages': []
             }
-
-        # Load content.json to find pages
-        content_path = os.path.join(DOCUMENTS_DIR, file_hash, 'content.json')
-        if os.path.exists(content_path):
-            with open(content_path, 'r') as f:
-                doc_data = json.load(f)
-
-            for page_data in doc_data.get('pages', []):
-                for page_code in page_data.get('codes', []):
-                    if page_code.get('code') == code:
-                        page_num = page_data.get('page')
-                        if page_num not in documents[file_hash]['pages']:
-                            documents[file_hash]['pages'].append(page_num)
-                        # Add context
-                        if page_code.get('context'):
-                            contexts.append({
-                                'page': page_num,
-                                'context': page_code.get('context'),
-                                'document': filename
-                            })
-
+            
+            # Load content.json to get pages with this code
+            content_path = os.path.join(DOCUMENTS_DIR, file_hash, 'content.json')
+            if os.path.exists(content_path):
+                with open(content_path, 'r', encoding='utf-8') as f:
+                    doc_content = json.load(f)
+                
+                for page_data in doc_content.get('pages', []):
+                    for code_info in page_data.get('codes', []):
+                        if code_info.get('code') == code:
+                            documents[file_hash]['pages'].append(page_data['page'])
+                            if code_info.get('context'):
+                                contexts.append({
+                                    'page': page_data['page'],
+                                    'context': code_info['context'],
+                                    'document': row[4]
+                                })
+                            break
+    
     category_info = get_code_category(code)
     rule_status = get_rule_status(code)
-
+    
     return {
         'code': code,
         'type': code_type,
         'category': category_info,
         'documents': list(documents.values()),
-        'contexts': contexts[:10],  # Limit contexts
+        'contexts': contexts[:10],
         'rule_status': rule_status,
         'total_pages': sum(len(d['pages']) for d in documents.values())
+    }
+
+
+@router.get("/codes/{code}/sources")
+async def get_code_sources(code: str, document_ids: Optional[str] = None):
+    """
+    Получает форматированные sources для кода (с doc_id headers).
+    """
+    doc_ids = document_ids.split(',') if document_ids else None
+    sources_ctx = build_sources_context(code, doc_ids)
+    
+    if not sources_ctx.sources_text:
+        raise HTTPException(status_code=404, detail=f"No sources found for code '{code}'")
+    
+    return {
+        'code': code,
+        'sources_text': sources_ctx.sources_text,
+        'documents': [
+            {
+                'doc_id': doc.doc_id,
+                'filename': doc.filename,
+                'pages': doc.pages
+            }
+            for doc in sources_ctx.source_documents
+        ],
+        'total_pages': sources_ctx.total_pages
     }
 
 
@@ -322,17 +317,19 @@ async def get_code_details(code: str):
 async def get_code_guideline(code: str, document_ids: Optional[str] = None):
     """
     Получает текст гайдлайна для кода.
+    DEPRECATED: Use /codes/{code}/sources instead.
     """
     doc_ids = document_ids.split(',') if document_ids else None
-    guideline_text = get_guideline_text_for_code(code, doc_ids)
-
-    if not guideline_text:
+    sources_ctx = build_sources_context(code, doc_ids)
+    
+    if not sources_ctx.sources_text:
         raise HTTPException(status_code=404, detail=f"No guideline text found for code '{code}'")
-
+    
     return {
         'code': code,
-        'guideline': guideline_text,
-        'length': len(guideline_text)
+        'guideline': sources_ctx.sources_text,
+        'length': len(sources_ctx.sources_text),
+        'documents': [doc.doc_id for doc in sources_ctx.source_documents]
     }
 
 
@@ -341,81 +338,107 @@ async def get_code_rule(code: str):
     """
     Получает существующее правило для кода.
     """
+    # Check versioned structure first
+    code_dir = code.replace(".", "_").replace("/", "_")
+    versioned_path = os.path.join(RULES_DIR, code_dir)
+    
+    if os.path.exists(versioned_path):
+        versions = [d for d in os.listdir(versioned_path) if d.startswith('v')]
+        if versions:
+            latest = sorted(versions, key=lambda x: int(x[1:]))[-1]
+            rule_path = os.path.join(versioned_path, latest, "rule.json")
+            if os.path.exists(rule_path):
+                with open(rule_path, 'r') as f:
+                    return json.load(f)
+    
+    # Fallback to flat structure
     rule_path = os.path.join(RULES_DIR, f"{code.replace('.', '_')}.json")
-
+    
     if not os.path.exists(rule_path):
         raise HTTPException(status_code=404, detail=f"No rule found for code '{code}'")
-
+    
     with open(rule_path, 'r') as f:
-        rule = json.load(f)
+        return json.load(f)
 
-    return rule
 
+@router.get("/codes/{code}/generation-log")
+async def get_generation_log(code: str, version: Optional[int] = None):
+    """
+    Получает лог генерации для кода.
+    """
+    code_dir = code.replace(".", "_").replace("/", "_")
+    versioned_path = os.path.join(RULES_DIR, code_dir)
+    
+    if not os.path.exists(versioned_path):
+        raise HTTPException(status_code=404, detail=f"No generation log found for code '{code}'")
+    
+    versions = [d for d in os.listdir(versioned_path) if d.startswith('v')]
+    if not versions:
+        raise HTTPException(status_code=404, detail=f"No versions found for code '{code}'")
+    
+    if version:
+        target_version = f"v{version}"
+    else:
+        target_version = sorted(versions, key=lambda x: int(x[1:]))[-1]
+    
+    log_path = os.path.join(versioned_path, target_version, "generation_log.json")
+    
+    if not os.path.exists(log_path):
+        raise HTTPException(status_code=404, detail=f"Generation log not found for {code} {target_version}")
+    
+    with open(log_path, 'r') as f:
+        return json.load(f)
+
+
+# ============================================================
+# GENERATION ENDPOINT
+# ============================================================
 
 @router.post("/generate/{code}")
-async def generate_rule_stream(code: str, request: GenerateRuleRequest):
+async def generate_rule_endpoint(code: str, request: GenerateRuleRequest):
     """
     Генерирует правило для кода с SSE стримингом прогресса.
-
+    
     Pipeline: Draft → Validation (Mentor + RedTeam) → Arbitration → Final
+    
+    SSE Event Format:
+    {
+        "step": "draft|mentor|redteam|arbitration|finalization|pipeline",
+        "type": "status|thought|content|verification|done|error",
+        "content": "...",
+        "full_text": "...",  // on done
+        "duration_ms": 15000  // on done
+    }
     """
-    # Get guideline text
-    guideline_text = get_guideline_text_for_code(code, request.document_ids)
-
-    if not guideline_text:
-        raise HTTPException(status_code=400, detail=f"No guideline text found for code '{code}'")
-
-    async def generate_stream():
-        import json
-        from datetime import datetime
-
-        # Step 1: Draft
-        yield f"data: {json.dumps({'step': 'draft', 'status': 'starting', 'message': 'Generating draft...'})}\n\n"
-
-        # TODO: Implement actual generation with core_ai
-        await asyncio.sleep(1)  # Placeholder
-
-        yield f"data: {json.dumps({'step': 'draft', 'status': 'complete', 'message': 'Draft complete'})}\n\n"
-
-        # Step 2: Validation
-        yield f"data: {json.dumps({'step': 'validation', 'status': 'starting', 'message': 'Running validators...'})}\n\n"
-
-        await asyncio.sleep(1)
-
-        yield f"data: {json.dumps({'step': 'validation', 'status': 'complete', 'message': 'Validation complete'})}\n\n"
-
-        # Step 3: Arbitration
-        yield f"data: {json.dumps({'step': 'arbitration', 'status': 'starting', 'message': 'Arbitrating corrections...'})}\n\n"
-
-        await asyncio.sleep(1)
-
-        yield f"data: {json.dumps({'step': 'arbitration', 'status': 'complete', 'message': 'Arbitration complete'})}\n\n"
-
-        # Step 4: Finalization
-        yield f"data: {json.dumps({'step': 'final', 'status': 'starting', 'message': 'Finalizing rule...'})}\n\n"
-
-        await asyncio.sleep(1)
-
-        # Save rule with is_mock flag
-        rule = {
-            'code': code,
-            'code_type': request.code_type,
-            'version': '1.0',
-            'is_mock': True,  # Mark as mock - no real content yet
-            'created_at': datetime.utcnow().isoformat() + 'Z',
-            'draft': '# Mock draft - real content pending',
-            'final': '# Mock rule - real content pending',
-            'citations': []
+    # Check sources exist
+    sources_ctx = build_sources_context(code, request.document_ids)
+    
+    if not sources_ctx.sources_text:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"No source documents found for code '{code}'. Upload relevant documents first."
+        )
+    
+    async def event_stream():
+        generator = RuleGenerator(thinking_budget=request.thinking_budget)
+        
+        async for event in generator.stream_pipeline(
+            code=code,
+            document_ids=request.document_ids,
+            code_type=request.code_type,
+            parallel_validators=request.parallel_validators
+        ):
+            yield f"data: {event}\n\n"
+    
+    return StreamingResponse(
+        event_stream(), 
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
         }
-
-        rule_path = os.path.join(RULES_DIR, f"{code.replace('.', '_')}.json")
-        with open(rule_path, 'w') as f:
-            json.dump(rule, f, indent=2)
-
-        yield f"data: {json.dumps({'step': 'final', 'status': 'complete', 'message': 'Rule saved'})}\n\n"
-        yield f"data: {json.dumps({'step': 'done', 'status': 'complete', 'rule': rule})}\n\n"
-
-    return StreamingResponse(generate_stream(), media_type="text/event-stream")
+    )
 
 
 @router.delete("/codes/{code}/rule")
@@ -423,80 +446,25 @@ async def delete_rule(code: str):
     """
     Удаляет правило для кода.
     """
+    deleted = False
+    
+    # Delete versioned structure
+    code_dir = code.replace(".", "_").replace("/", "_")
+    versioned_path = os.path.join(RULES_DIR, code_dir)
+    
+    if os.path.exists(versioned_path):
+        import shutil
+        shutil.rmtree(versioned_path)
+        deleted = True
+    
+    # Delete flat structure
     rule_path = os.path.join(RULES_DIR, f"{code.replace('.', '_')}.json")
-
-    if not os.path.exists(rule_path):
+    
+    if os.path.exists(rule_path):
+        os.remove(rule_path)
+        deleted = True
+    
+    if not deleted:
         raise HTTPException(status_code=404, detail=f"No rule found for code '{code}'")
-
-    os.remove(rule_path)
-
+    
     return {'status': 'deleted', 'code': code}
-
-
-@router.delete("/mock")
-async def clear_mock_rules():
-    """
-    Удаляет все mock-правила (is_mock=True).
-    Используется для перезапуска генерации.
-    """
-    deleted = []
-    kept = []
-
-    if not os.path.exists(RULES_DIR):
-        return {'deleted': 0, 'kept': 0, 'codes': []}
-
-    for filename in os.listdir(RULES_DIR):
-        if not filename.endswith('.json'):
-            continue
-
-        rule_path = os.path.join(RULES_DIR, filename)
-        try:
-            with open(rule_path, 'r') as f:
-                rule = json.load(f)
-
-            if rule.get('is_mock', False):
-                os.remove(rule_path)
-                deleted.append(rule.get('code', filename))
-            else:
-                kept.append(rule.get('code', filename))
-        except Exception as e:
-            print(f"Error processing {filename}: {e}")
-
-    return {
-        'deleted': len(deleted),
-        'kept': len(kept),
-        'deleted_codes': deleted
-    }
-
-
-@router.get("/stats")
-async def get_rules_stats():
-    """
-    Статистика по правилам.
-    """
-    total = 0
-    mock_count = 0
-    real_count = 0
-
-    if os.path.exists(RULES_DIR):
-        for filename in os.listdir(RULES_DIR):
-            if not filename.endswith('.json'):
-                continue
-
-            total += 1
-            rule_path = os.path.join(RULES_DIR, filename)
-            try:
-                with open(rule_path, 'r') as f:
-                    rule = json.load(f)
-                if rule.get('is_mock', False):
-                    mock_count += 1
-                else:
-                    real_count += 1
-            except:
-                pass
-
-    return {
-        'total': total,
-        'mock': mock_count,
-        'real': real_count
-    }
