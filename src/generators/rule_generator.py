@@ -39,6 +39,7 @@ from .prompts import (
 from src.validators.citations import (
     parse_sources_to_pages,
     verify_citations,
+    verify_draft_citations,
     format_citation_errors_for_prompt,
     apply_repairs_to_output,
 )
@@ -212,7 +213,8 @@ class RuleGenerator:
         prompt = PROMPT_CODE_RULE_DRAFT.substitute(
             sources=self._sources_ctx.sources_text,
             code=code,
-            code_type=code_type
+            code_type=code_type,
+            description=self._sources_ctx.code_description or f"See source documents"
         )
         
         # Stream with events
@@ -223,17 +225,10 @@ class RuleGenerator:
             elif event_json:
                 yield event_json
         
-        # Verify citations
-        citations_check = verify_citations(full_text, self._doc_pages)
+        # Verify citations (Draft uses indexed format, not inline)
+        citations_check = verify_draft_citations(full_text, self._doc_pages)
         
-        # Apply auto-repairs if any
-        if citations_check.get("repaired"):
-            full_text = apply_repairs_to_output(full_text, citations_check["repaired"])
-            yield self._event(step, "verification", 
-                content=f"Auto-repaired {len(citations_check['repaired'])} citations"
-            ).to_json()
-        
-        # Store result
+        # Store result (no auto-repair for Draft - repairs happen in Finalization)
         self._results[step] = StepResult(
             step=step,
             output=full_text,

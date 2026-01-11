@@ -157,20 +157,21 @@ async def get_categories():
         # Count rules
         codes_with_rules = sum(1 for c in codes if get_rule_status(c['code'])['has_rule'])
         
-        # Get icon from first code
-        icon = codes[0]['category_info']['icon'] if codes else '📄'
-        
+        # Get color from first code's category_info (safe access)
+        category_info = codes[0].get('category_info', {}) if codes else {}
+        color = category_info.get('color', '#6B7280')
+
         categories.append({
             'name': category_name,
-            'icon': icon,
+            'color': color,
             'total_codes': len(codes),
             'codes_with_rules': codes_with_rules,
             'coverage_percent': round(codes_with_rules / len(codes) * 100) if codes else 0
         })
-    
+
     # Sort by name
     categories.sort(key=lambda x: x['name'])
-    
+
     return {
         'categories': categories,
         'total_codes': len(all_codes),
@@ -182,32 +183,48 @@ async def get_categories():
 async def get_codes_by_category(category_name: str):
     """
     Получает коды в категории с информацией о документах и статусе правил.
+    Разделяет на diagnoses (ICD-10) и procedures (CPT/HCPCS).
     """
     all_codes = get_all_codes_from_db()
     grouped = group_codes_by_category(all_codes)
-    
+
     if category_name not in grouped:
         raise HTTPException(status_code=404, detail=f"Category '{category_name}' not found")
-    
+
     codes = grouped[category_name]
-    
-    # Enrich with rule status
-    result = []
+
+    # Enrich with rule status and split by type
+    diagnoses = []
+    procedures = []
+
     for code_info in codes:
         rule_status = get_rule_status(code_info['code'])
-        result.append({
+        enriched = {
             **code_info,
             'rule_status': rule_status
-        })
-    
+        }
+
+        # ICD-10 = diagnosis, CPT/HCPCS = procedure
+        code_type = code_info.get('type', 'ICD-10')
+        if code_type in ['CPT', 'HCPCS']:
+            procedures.append(enriched)
+        else:
+            diagnoses.append(enriched)
+
     # Sort by code
-    result.sort(key=lambda x: x['code'])
-    
+    diagnoses.sort(key=lambda x: x['code'])
+    procedures.sort(key=lambda x: x['code'])
+
+    all_codes_enriched = diagnoses + procedures
+
     return {
         'category': category_name,
-        'codes': result,
-        'total': len(result),
-        'with_rules': sum(1 for c in result if c['rule_status']['has_rule'])
+        'diagnoses': diagnoses,
+        'procedures': procedures,
+        'total': len(all_codes_enriched),
+        'total_diagnoses': len(diagnoses),
+        'total_procedures': len(procedures),
+        'with_rules': sum(1 for c in all_codes_enriched if c['rule_status']['has_rule'])
     }
 
 
@@ -218,7 +235,7 @@ async def get_code_details(code: str):
     """
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+
     cursor.execute("""
         SELECT DISTINCT
             dc.code_pattern,
@@ -232,18 +249,18 @@ async def get_code_details(code: str):
         WHERE dc.code_pattern = ?
         ORDER BY d.filename
     """, (code,))
-    
+
     rows = cursor.fetchall()
     conn.close()
-    
+
     if not rows:
         raise HTTPException(status_code=404, detail=f"Code '{code}' not found")
-    
+
     # Group by document and load page info from content.json
     documents = {}
     contexts = []
     code_type = rows[0][1]
-    
+
     for row in rows:
         file_hash = row[5]
         if file_hash not in documents:
@@ -254,13 +271,13 @@ async def get_code_details(code: str):
                 'doc_id': file_hash[:8] if file_hash else None,
                 'pages': []
             }
-            
+
             # Load content.json to get pages with this code
             content_path = os.path.join(DOCUMENTS_DIR, file_hash, 'content.json')
             if os.path.exists(content_path):
                 with open(content_path, 'r', encoding='utf-8') as f:
                     doc_content = json.load(f)
-                
+
                 for page_data in doc_content.get('pages', []):
                     for code_info in page_data.get('codes', []):
                         if code_info.get('code') == code:
@@ -272,10 +289,10 @@ async def get_code_details(code: str):
                                     'document': row[4]
                                 })
                             break
-    
+
     category_info = get_code_category(code)
     rule_status = get_rule_status(code)
-    
+
     return {
         'code': code,
         'type': code_type,
@@ -294,10 +311,10 @@ async def get_code_sources(code: str, document_ids: Optional[str] = None):
     """
     doc_ids = document_ids.split(',') if document_ids else None
     sources_ctx = build_sources_context(code, doc_ids)
-    
+
     if not sources_ctx.sources_text:
         raise HTTPException(status_code=404, detail=f"No sources found for code '{code}'")
-    
+
     return {
         'code': code,
         'sources_text': sources_ctx.sources_text,
@@ -321,10 +338,10 @@ async def get_code_guideline(code: str, document_ids: Optional[str] = None):
     """
     doc_ids = document_ids.split(',') if document_ids else None
     sources_ctx = build_sources_context(code, doc_ids)
-    
+
     if not sources_ctx.sources_text:
         raise HTTPException(status_code=404, detail=f"No guideline text found for code '{code}'")
-    
+
     return {
         'code': code,
         'guideline': sources_ctx.sources_text,
@@ -341,7 +358,7 @@ async def get_code_rule(code: str):
     # Check versioned structure first
     code_dir = code.replace(".", "_").replace("/", "_")
     versioned_path = os.path.join(RULES_DIR, code_dir)
-    
+
     if os.path.exists(versioned_path):
         versions = [d for d in os.listdir(versioned_path) if d.startswith('v')]
         if versions:
@@ -350,13 +367,13 @@ async def get_code_rule(code: str):
             if os.path.exists(rule_path):
                 with open(rule_path, 'r') as f:
                     return json.load(f)
-    
+
     # Fallback to flat structure
     rule_path = os.path.join(RULES_DIR, f"{code.replace('.', '_')}.json")
-    
+
     if not os.path.exists(rule_path):
         raise HTTPException(status_code=404, detail=f"No rule found for code '{code}'")
-    
+
     with open(rule_path, 'r') as f:
         return json.load(f)
 
@@ -368,24 +385,24 @@ async def get_generation_log(code: str, version: Optional[int] = None):
     """
     code_dir = code.replace(".", "_").replace("/", "_")
     versioned_path = os.path.join(RULES_DIR, code_dir)
-    
+
     if not os.path.exists(versioned_path):
         raise HTTPException(status_code=404, detail=f"No generation log found for code '{code}'")
-    
+
     versions = [d for d in os.listdir(versioned_path) if d.startswith('v')]
     if not versions:
         raise HTTPException(status_code=404, detail=f"No versions found for code '{code}'")
-    
+
     if version:
         target_version = f"v{version}"
     else:
         target_version = sorted(versions, key=lambda x: int(x[1:]))[-1]
-    
+
     log_path = os.path.join(versioned_path, target_version, "generation_log.json")
-    
+
     if not os.path.exists(log_path):
         raise HTTPException(status_code=404, detail=f"Generation log not found for {code} {target_version}")
-    
+
     with open(log_path, 'r') as f:
         return json.load(f)
 
@@ -398,9 +415,9 @@ async def get_generation_log(code: str, version: Optional[int] = None):
 async def generate_rule_endpoint(code: str, request: GenerateRuleRequest):
     """
     Генерирует правило для кода с SSE стримингом прогресса.
-    
+
     Pipeline: Draft → Validation (Mentor + RedTeam) → Arbitration → Final
-    
+
     SSE Event Format:
     {
         "step": "draft|mentor|redteam|arbitration|finalization|pipeline",
@@ -412,16 +429,16 @@ async def generate_rule_endpoint(code: str, request: GenerateRuleRequest):
     """
     # Check sources exist
     sources_ctx = build_sources_context(code, request.document_ids)
-    
+
     if not sources_ctx.sources_text:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"No source documents found for code '{code}'. Upload relevant documents first."
         )
-    
+
     async def event_stream():
         generator = RuleGenerator(thinking_budget=request.thinking_budget)
-        
+
         async for event in generator.stream_pipeline(
             code=code,
             document_ids=request.document_ids,
@@ -429,9 +446,9 @@ async def generate_rule_endpoint(code: str, request: GenerateRuleRequest):
             parallel_validators=request.parallel_validators
         ):
             yield f"data: {event}\n\n"
-    
+
     return StreamingResponse(
-        event_stream(), 
+        event_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -447,24 +464,24 @@ async def delete_rule(code: str):
     Удаляет правило для кода.
     """
     deleted = False
-    
+
     # Delete versioned structure
     code_dir = code.replace(".", "_").replace("/", "_")
     versioned_path = os.path.join(RULES_DIR, code_dir)
-    
+
     if os.path.exists(versioned_path):
         import shutil
         shutil.rmtree(versioned_path)
         deleted = True
-    
+
     # Delete flat structure
     rule_path = os.path.join(RULES_DIR, f"{code.replace('.', '_')}.json")
-    
+
     if os.path.exists(rule_path):
         os.remove(rule_path)
         deleted = True
-    
+
     if not deleted:
         raise HTTPException(status_code=404, detail=f"No rule found for code '{code}'")
-    
+
     return {'status': 'deleted', 'code': code}

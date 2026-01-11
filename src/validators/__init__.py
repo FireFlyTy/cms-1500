@@ -9,6 +9,7 @@
 from .citations import (
     parse_sources_to_pages,
     verify_citations,
+    verify_draft_citations,
     format_citation_errors_for_prompt,
     apply_repairs_to_output,
 )
@@ -16,6 +17,7 @@ from .citations import (
 __all__ = [
     'parse_sources_to_pages',
     'verify_citations',
+    'verify_draft_citations',
     'format_citation_errors_for_prompt',
     'apply_repairs_to_output',
 ]

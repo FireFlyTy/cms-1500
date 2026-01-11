@@ -45,6 +45,7 @@ class SourcesContext:
     sources_text: str                    # Форматированный текст для промпта
     source_documents: List[SourceDocument]  # Метаданные документов
     total_pages: int                     # Общее количество страниц
+    code_description: str = ""           # Описание кода из document_codes
     
 
 def get_doc_id(file_hash: str) -> str:
@@ -81,6 +82,15 @@ def build_sources_context(
     cursor = conn.cursor()
     
     try:
+        # Get description for the code
+        cursor.execute("""
+            SELECT description FROM document_codes 
+            WHERE code_pattern = ? AND description IS NOT NULL AND description != ''
+            LIMIT 1
+        """, (code,))
+        desc_row = cursor.fetchone()
+        code_description = desc_row[0] if desc_row else ""
+        
         # Get document IDs, pages, and file info for this code
         # NOTE: document_codes.document_id = documents.file_hash (NOT documents.id)
         if document_ids:
@@ -111,7 +121,8 @@ def build_sources_context(
             return SourcesContext(
                 sources_text="",
                 source_documents=[],
-                total_pages=0
+                total_pages=0,
+                code_description=code_description
             )
         
         # Collect unique documents
@@ -197,7 +208,8 @@ def build_sources_context(
         return SourcesContext(
             sources_text=sources_text,
             source_documents=source_documents,
-            total_pages=total_pages
+            total_pages=total_pages,
+            code_description=code_description
         )
         
     finally:
