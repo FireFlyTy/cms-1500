@@ -136,23 +136,190 @@ class DocumentData:
         }
 
 
+def normalize_code_pattern(code: str) -> str:
+    """
+    Нормализует wildcard паттерны и диапазоны в кодах.
+
+    Wildcards:
+        E11.*  → E11.%
+        E11.-  → E11.%
+        E11.x  → E11.%
+
+    Ranges:
+        47531-47541 → 47531:47541
+        99213-99215 → 99213:99215
+        I20-I25     → I20:I25
+    """
+    if not code:
+        return code
+
+    normalized = code.upper().strip()
+
+    # Check for range pattern: CODE-CODE (but not wildcard like E11.-)
+    # Range pattern: starts with alphanumeric, has dash in middle, ends with alphanumeric
+    range_match = re.match(r'^([A-Z0-9\.]+)-([A-Z0-9\.]+)$', normalized)
+    if range_match:
+        start, end = range_match.groups()
+        # Make sure it's actually a range (not E11.- wildcard)
+        if len(end) > 1 and not end.startswith('.'):
+            return f"{start}:{end}"
+
+    # Replace wildcard characters at the end
+    if normalized.endswith('.*'):
+        normalized = normalized[:-1] + '%'
+    elif normalized.endswith('.-'):
+        normalized = normalized[:-1] + '%'
+    elif normalized.endswith('.X'):
+        normalized = normalized[:-1] + '%'
+    elif normalized.endswith('*'):
+        normalized = normalized[:-1] + '%'
+
+    return normalized
+
+
+def is_wildcard_code(code: str) -> bool:
+    """Проверяет является ли код wildcard паттерном."""
+    return code and '%' in code
+
+
+def is_range_code(code: str) -> bool:
+    """Проверяет является ли код диапазоном (47531:47541)."""
+    return code and ':' in code
+
+
+def parse_range(range_code: str) -> tuple:
+    """
+    Парсит диапазон кода.
+
+    47531:47541 → ('47531', '47541')
+    I20:I25     → ('I20', 'I25')
+
+    Returns: (start, end) or (None, None) if not a range
+    """
+    if not range_code or ':' not in range_code:
+        return (None, None)
+
+    parts = range_code.split(':')
+    if len(parts) != 2:
+        return (None, None)
+
+    return (parts[0].strip(), parts[1].strip())
+
+
+def code_in_range(code: str, range_code: str) -> bool:
+    """
+    Проверяет входит ли код в диапазон.
+
+    code_in_range("47535", "47531:47541") → True
+    code_in_range("47550", "47531:47541") → False
+    code_in_range("I21", "I20:I25")       → True
+    """
+    start, end = parse_range(range_code)
+    if not start or not end:
+        return False
+
+    code = code.upper()
+    start = start.upper()
+    end = end.upper()
+
+    # Extract numeric and alpha parts for comparison
+    # For pure numeric codes (CPT): 47531 <= 47535 <= 47541
+    # For ICD-10 ranges: I20 <= I21 <= I25
+
+    try:
+        # Try numeric comparison first
+        if code.isdigit() and start.isdigit() and end.isdigit():
+            return int(start) <= int(code) <= int(end)
+
+        # Alphanumeric comparison (ICD-10 style)
+        # Extract common prefix and compare numeric suffix
+        common_prefix = ""
+        for i, (c1, c2, c3) in enumerate(zip(code, start, end)):
+            if c1 == c2 == c3 and c1.isalpha():
+                common_prefix += c1
+            else:
+                break
+
+        if common_prefix:
+            code_suffix = code[len(common_prefix):]
+            start_suffix = start[len(common_prefix):]
+            end_suffix = end[len(common_prefix):]
+
+            # Compare remaining parts
+            if code_suffix.replace('.', '').isdigit() and \
+               start_suffix.replace('.', '').isdigit() and \
+               end_suffix.replace('.', '').isdigit():
+                code_num = float(code_suffix) if '.' in code_suffix else int(code_suffix)
+                start_num = float(start_suffix) if '.' in start_suffix else int(start_suffix)
+                end_num = float(end_suffix) if '.' in end_suffix else int(end_suffix)
+                return start_num <= code_num <= end_num
+
+        # Fallback to string comparison
+        return start <= code <= end
+
+    except (ValueError, TypeError):
+        # Fallback to string comparison
+        return start <= code <= end
+
+
+def code_matches_pattern(code: str, pattern: str) -> bool:
+    """
+    Проверяет соответствует ли конкретный код паттерну.
+
+    Exact match:
+        code_matches_pattern("E11.9", "E11.9") → True
+
+    Wildcard match:
+        code_matches_pattern("E11.9", "E11.%") → True
+        code_matches_pattern("E11.9", "E12.%") → False
+
+    Range match:
+        code_matches_pattern("47535", "47531:47541") → True
+        code_matches_pattern("47550", "47531:47541") → False
+    """
+    if not code or not pattern:
+        return False
+
+    code = code.upper()
+    pattern = pattern.upper()
+
+    # Exact match
+    if pattern == code:
+        return True
+
+    # Range match
+    if ':' in pattern:
+        return code_in_range(code, pattern)
+
+    # Wildcard match
+    if '%' in pattern:
+        regex_pattern = '^' + pattern.replace('%', '.*').replace('_', '.') + '$'
+        return bool(re.match(regex_pattern, code))
+
+    return False
+
+
 def parse_code_string(code_str: str) -> List[CodeInfo]:
     """
     Парсит строку кодов: "E11.9 (ICD-10), J1950 (HCPCS), 99213 (CPT)"
+    Нормализует wildcard паттерны (*, -, x → %)
     """
     codes = []
     if not code_str or code_str.strip() == '-':
         return codes
-    
+
     # Pattern: CODE (TYPE) или CODE (TYPE: context)
     pattern = r'([A-Z0-9\.\-\*]+)\s*\(([^:)]+)(?::\s*([^)]+))?\)'
     matches = re.findall(pattern, code_str, re.IGNORECASE)
-    
+
     for match in matches:
         code = match[0].strip()
         code_type = match[1].strip().upper()
         context = match[2].strip() if len(match) > 2 and match[2] else None
-        
+
+        # Normalize wildcard patterns
+        code = normalize_code_pattern(code)
+
         # Normalize code type
         if code_type in ['ICD-10', 'ICD10', 'ICD']:
             code_type = 'ICD-10'
@@ -162,9 +329,9 @@ def parse_code_string(code_str: str) -> List[CodeInfo]:
             code_type = 'CPT'
         elif code_type in ['NDC']:
             code_type = 'NDC'
-        
+
         codes.append(CodeInfo(code=code, type=code_type, context=context))
-    
+
     # Fallback: если pattern не сработал, пробуем простой split
     if not codes and code_str:
         parts = code_str.split(',')
@@ -172,7 +339,8 @@ def parse_code_string(code_str: str) -> List[CodeInfo]:
             part = part.strip()
             if not part:
                 continue
-            # Try to detect type from code format
+            # Normalize and detect type
+            part = normalize_code_pattern(part)
             code_type = detect_code_type(part)
             codes.append(CodeInfo(code=part, type=code_type, context=None))
     

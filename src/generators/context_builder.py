@@ -56,6 +56,57 @@ def get_doc_id(file_hash: str) -> str:
     return file_hash[:8]
 
 
+def get_wildcard_patterns_for_code(code: str) -> List[str]:
+    """
+    Генерирует wildcard паттерны которые могут покрывать данный код.
+
+    Для E11.9 возвращает:
+    - E11.%  (все E11.x)
+    - E1%.%  (все E1x.x) - опционально
+    - E%     (все E codes) - опционально
+
+    Для J1950:
+    - J1950
+    - J195%
+    - J19%
+    - J1%
+    - J%
+
+    Returns:
+        List of wildcard patterns (excluding exact match)
+    """
+    if not code:
+        return []
+
+    code = code.upper()
+    patterns = []
+
+    # ICD-10 style codes (E11.9, F32.1, Z79.4)
+    if '.' in code:
+        parts = code.split('.')
+        base = parts[0]  # E11
+
+        # Add base.% pattern
+        patterns.append(f"{base}.%")
+
+        # Add progressively shorter patterns
+        for i in range(len(base) - 1, 0, -1):
+            patterns.append(f"{base[:i]}%.%")
+
+        # Add single letter pattern
+        if len(base) >= 1:
+            patterns.append(f"{base[0]}%")
+
+    else:
+        # HCPCS/CPT style codes (J1950, 99213)
+        for i in range(len(code) - 1, 0, -1):
+            patterns.append(f"{code[:i]}%")
+
+    # Remove duplicates and return
+    return list(dict.fromkeys(patterns))
+    return file_hash[:8]
+
+
 def build_sources_context(
     code: str,
     document_ids: Optional[List[str]] = None,
@@ -64,23 +115,23 @@ def build_sources_context(
 ) -> SourcesContext:
     """
     Собирает source documents для кода из Knowledge Base.
-    
+
     Args:
         code: ICD-10 код (e.g., "E11.9")
-        document_ids: Опционально - конкретные document IDs. 
+        document_ids: Опционально - конкретные document IDs.
                       Если None, берёт все документы где встречается код.
         db_connection: SQLite connection (если None, создаёт новый)
         expand_pages: Сколько страниц добавить до/после найденных (для контекста)
-        
+
     Returns:
         SourcesContext с форматированным текстом и метаданными
     """
     # Import here to avoid circular imports
     from src.db.connection import get_db_connection
-    
+
     conn = db_connection or get_db_connection()
     cursor = conn.cursor()
-    
+
     try:
         # Get description for the code
         cursor.execute("""
@@ -90,33 +141,46 @@ def build_sources_context(
         """, (code,))
         desc_row = cursor.fetchone()
         code_description = desc_row[0] if desc_row else ""
-        
+
+        # Build wildcard patterns that would match this code
+        # E11.9 → ['E11.9', 'E11.%', 'E1%.%', 'E%']
+        wildcard_patterns = get_wildcard_patterns_for_code(code)
+
         # Get document IDs, pages, and file info for this code
         # NOTE: document_codes.document_id = documents.file_hash (NOT documents.id)
+        # FILTER: Exclude policy documents
+        # MATCH: Exact code OR wildcard patterns that cover this code
+        pattern_placeholders = ','.join('?' * len(wildcard_patterns))
+
         if document_ids:
-            placeholders = ','.join('?' * len(document_ids))
+            doc_placeholders = ','.join('?' * len(document_ids))
             cursor.execute(f"""
                 SELECT DISTINCT 
                     dc.document_id, 
                     d.file_hash,
-                    d.filename
+                    d.filename,
+                    dc.code_pattern
                 FROM document_codes dc
                 JOIN documents d ON dc.document_id = d.file_hash
-                WHERE dc.code_pattern = ? AND dc.document_id IN ({placeholders})
-            """, [code] + document_ids)
+                WHERE (dc.code_pattern = ? OR dc.code_pattern IN ({pattern_placeholders}))
+                  AND dc.document_id IN ({doc_placeholders})
+                  AND (d.doc_type IS NULL OR d.doc_type != 'policy')
+            """, [code] + wildcard_patterns + document_ids)
         else:
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT DISTINCT 
                     dc.document_id, 
                     d.file_hash,
-                    d.filename
+                    d.filename,
+                    dc.code_pattern
                 FROM document_codes dc
                 JOIN documents d ON dc.document_id = d.file_hash
-                WHERE dc.code_pattern = ?
-            """, (code,))
-        
+                WHERE (dc.code_pattern = ? OR dc.code_pattern IN ({pattern_placeholders}))
+                  AND (d.doc_type IS NULL OR d.doc_type != 'policy')
+            """, [code] + wildcard_patterns)
+
         rows = cursor.fetchall()
-        
+
         if not rows:
             return SourcesContext(
                 sources_text="",
@@ -124,48 +188,60 @@ def build_sources_context(
                 total_pages=0,
                 code_description=code_description
             )
-        
-        # Collect unique documents
-        # Row format: (document_id, file_hash, filename)
+
+        # Collect unique documents and their matched patterns
+        # Row format: (document_id, file_hash, filename, code_pattern)
         docs_data: Dict[str, Dict] = {}
-        for document_id, file_hash, filename in rows:
+        for document_id, file_hash, filename, matched_pattern in rows:
             if file_hash not in docs_data:
                 docs_data[file_hash] = {
                     'file_hash': file_hash,
                     'filename': filename,
-                    'document_id': document_id
+                    'document_id': document_id,
+                    'matched_patterns': set()
                 }
-        
+            docs_data[file_hash]['matched_patterns'].add(matched_pattern)
+
+        # All patterns to search for in pages (original code + wildcards from DB)
+        all_patterns_to_match = {code} | set(wildcard_patterns)
+
         # Load content and find pages with the code
         source_documents = []
         formatted_parts = []
         total_pages = 0
-        
+
         for file_hash, data in docs_data.items():
             filename = data['filename']
-            
+            matched_patterns = data['matched_patterns']
+
             # Load content.json
             content_path = os.path.join(DOCUMENTS_DIR, file_hash, 'content.json')
             if not os.path.exists(content_path):
                 continue
-            
+
             with open(content_path, 'r', encoding='utf-8') as f:
                 doc_content = json.load(f)
-            
-            # Find pages where this code appears
+
+            # Find pages where this code or matching wildcards appear
             pages_with_code = set()
             for page_data in doc_content.get('pages', []):
                 page_codes = page_data.get('codes', [])
                 for code_info in page_codes:
-                    if code_info.get('code') == code:
+                    page_code = code_info.get('code', '').upper()
+                    # Check exact match
+                    if page_code == code.upper():
                         pages_with_code.add(page_data['page'])
                         break
-            
+                    # Check if page code is a wildcard that matches our code
+                    if page_code in matched_patterns:
+                        pages_with_code.add(page_data['page'])
+                        break
+
             # If no specific pages found, check summary
             if not pages_with_code:
                 # Fallback: include all pages (document matched but no page-level info)
                 pages_with_code = {p['page'] for p in doc_content.get('pages', []) if p.get('content')}
-            
+
             # Expand pages if requested
             if expand_pages > 0:
                 expanded = set()
@@ -174,26 +250,26 @@ def build_sources_context(
                         if p > 0:
                             expanded.add(p)
                 pages_with_code = expanded
-            
+
             # Generate doc_id from file_hash
             doc_id = get_doc_id(file_hash)
-            
+
             # Build document header
             doc_header = f"=== SOURCE: {filename} [doc_id: {doc_id}] ==="
             page_contents = []
             actual_pages = []
-            
+
             # Extract pages content
             pages_map = {p['page']: p['content'] for p in doc_content.get('pages', [])}
-            
+
             for page_num in sorted(pages_with_code):
                 if page_num in pages_map and pages_map[page_num]:
                     page_contents.append(f"## Page {page_num}\n{pages_map[page_num]}")
                     actual_pages.append(page_num)
-            
+
             if page_contents:
                 formatted_parts.append(doc_header + "\n\n" + "\n\n".join(page_contents))
-                
+
                 source_documents.append(SourceDocument(
                     doc_id=doc_id,
                     file_hash=file_hash,
@@ -202,16 +278,16 @@ def build_sources_context(
                     pages=actual_pages
                 ))
                 total_pages += len(actual_pages)
-        
+
         sources_text = "\n\n".join(formatted_parts)
-        
+
         return SourcesContext(
             sources_text=sources_text,
             source_documents=source_documents,
             total_pages=total_pages,
             code_description=code_description
         )
-        
+
     finally:
         if db_connection is None:
             conn.close()
@@ -232,12 +308,12 @@ def build_sources_from_raw_pages(
 ) -> SourcesContext:
     """
     Создаёт SourcesContext из raw page data (для тестов или single-doc случаев).
-    
+
     Args:
-        pages_data: List of {"page": N, "content": "..."} 
+        pages_data: List of {"page": N, "content": "..."}
         filename: Имя файла
         file_hash: SHA256 хэш (если None, генерируется из content)
-        
+
     Returns:
         SourcesContext
     """
@@ -247,28 +323,28 @@ def build_sources_from_raw_pages(
             source_documents=[],
             total_pages=0
         )
-    
+
     # Generate hash if not provided
     if file_hash is None:
         content_str = json.dumps(pages_data, sort_keys=True)
         file_hash = hashlib.sha256(content_str.encode()).hexdigest()
-    
+
     doc_id = get_doc_id(file_hash)
-    
+
     # Format content
     doc_header = f"=== SOURCE: {filename} [doc_id: {doc_id}] ==="
     page_contents = []
     actual_pages = []
-    
+
     for page_data in sorted(pages_data, key=lambda x: x.get('page', 0)):
         page_num = page_data.get('page')
         content = page_data.get('content', '')
         if page_num and content:
             page_contents.append(f"## Page {page_num}\n{content}")
             actual_pages.append(page_num)
-    
+
     sources_text = doc_header + "\n\n" + "\n\n".join(page_contents)
-    
+
     return SourcesContext(
         sources_text=sources_text,
         source_documents=[
@@ -292,13 +368,13 @@ def merge_sources_contexts(*contexts: SourcesContext) -> SourcesContext:
     all_texts = []
     all_docs = []
     total = 0
-    
+
     for ctx in contexts:
         if ctx.sources_text:
             all_texts.append(ctx.sources_text)
         all_docs.extend(ctx.source_documents)
         total += ctx.total_pages
-    
+
     return SourcesContext(
         sources_text="\n\n".join(all_texts),
         source_documents=all_docs,
@@ -313,56 +389,75 @@ def merge_sources_contexts(*contexts: SourcesContext) -> SourcesContext:
 def get_available_documents_for_code(code: str, db_connection=None) -> List[Dict]:
     """
     Получает список всех документов, содержащих данный код.
-    
+    Включает документы из wildcard паттернов.
+    FILTER: Excludes policy documents
+
     Returns:
-        List of {"document_id": str, "filename": str, "doc_id": str, "file_hash": str}
+        List of {"document_id": str, "filename": str, "doc_id": str, "file_hash": str, "via_wildcard": str|None}
     """
     from src.db.connection import get_db_connection
-    
+
     conn = db_connection or get_db_connection()
     cursor = conn.cursor()
-    
+
     try:
-        cursor.execute("""
+        # Get wildcard patterns for this code
+        wildcard_patterns = get_wildcard_patterns_for_code(code)
+        pattern_placeholders = ','.join('?' * len(wildcard_patterns)) if wildcard_patterns else "''"
+
+        # Exclude policy documents, include wildcard matches
+        cursor.execute(f"""
             SELECT DISTINCT
                 dc.document_id,
                 d.filename,
-                d.file_hash
+                d.file_hash,
+                dc.code_pattern
             FROM document_codes dc
             JOIN documents d ON dc.document_id = d.file_hash
-            WHERE dc.code_pattern = ?
-        """, (code,))
-        
+            WHERE (dc.code_pattern = ? OR dc.code_pattern IN ({pattern_placeholders}))
+              AND (d.doc_type IS NULL OR d.doc_type != 'policy')
+        """, [code] + wildcard_patterns)
+
         rows = cursor.fetchall()
-        
+
         result = []
-        for document_id, filename, file_hash in rows:
+        seen_hashes = set()
+
+        for document_id, filename, file_hash, matched_pattern in rows:
+            if file_hash in seen_hashes:
+                continue
+            seen_hashes.add(file_hash)
+
+            is_wildcard = matched_pattern.upper() != code.upper() and '%' in matched_pattern
+
             # Load content.json to get pages with this code
             content_path = os.path.join(DOCUMENTS_DIR, file_hash, 'content.json')
             pages = []
-            
+
             if os.path.exists(content_path):
                 with open(content_path, 'r', encoding='utf-8') as f:
                     doc_content = json.load(f)
-                
+
                 for page_data in doc_content.get('pages', []):
                     for code_info in page_data.get('codes', []):
-                        if code_info.get('code') == code:
+                        page_code = code_info.get('code', '').upper()
+                        if page_code == code.upper() or page_code == matched_pattern.upper():
                             pages.append(page_data['page'])
                             break
-            
+
             result.append({
                 'document_id': document_id,
                 'filename': filename,
                 'doc_id': get_doc_id(file_hash),
                 'file_hash': file_hash,
-                'pages': sorted(pages)
+                'pages': sorted(pages),
+                'via_wildcard': matched_pattern if is_wildcard else None
             })
-        
+
         return result
-        
+
         return result
-        
+
     finally:
         if db_connection is None:
             conn.close()
@@ -371,7 +466,7 @@ def get_available_documents_for_code(code: str, db_connection=None) -> List[Dict
 def validate_doc_ids_exist(doc_ids: List[str], sources_context: SourcesContext) -> List[str]:
     """
     Проверяет что все doc_ids присутствуют в контексте.
-    
+
     Returns:
         List of missing doc_ids
     """

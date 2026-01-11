@@ -4,6 +4,7 @@ Knowledge Base API - endpoints для управления документам�
 
 import os
 import io
+import re
 import json
 import hashlib
 import asyncio
@@ -29,7 +30,6 @@ from src.parsers.document_parser import (
 )
 from src.db.connection import get_db_connection
 
-
 # ============================================================
 # CONFIG
 # ============================================================
@@ -46,6 +46,48 @@ PARALLEL_LIMIT = 5  # Concurrent API calls
 client = genai.Client(api_key=GOOGLE_API_KEY)
 
 router = APIRouter(prefix="/api/kb", tags=["Knowledge Base"])
+
+
+# ============================================================
+# CODE NORMALIZATION
+# ============================================================
+
+def normalize_code_pattern(code: str) -> str:
+    """
+    Нормализует wildcard паттерны и диапазоны в кодах.
+
+    Wildcards:
+        E11.*  → E11.%
+        E11.-  → E11.%
+        E11.x  → E11.%
+
+    Ranges:
+        47531-47541 → 47531:47541
+    """
+    if not code:
+        return code
+
+    normalized = code.upper().strip()
+
+    # Check for range pattern: CODE-CODE (but not wildcard like E11.-)
+    range_match = re.match(r'^([A-Z0-9\.]+)-([A-Z0-9\.]+)$', normalized)
+    if range_match:
+        start, end = range_match.groups()
+        # Make sure it's actually a range (not E11.- wildcard)
+        if len(end) > 1 and not end.startswith('.'):
+            return f"{start}:{end}"
+
+    # Replace wildcard characters at the end
+    if normalized.endswith('.*'):
+        normalized = normalized[:-1] + '%'
+    elif normalized.endswith('.-'):
+        normalized = normalized[:-1] + '%'
+    elif normalized.endswith('.X'):
+        normalized = normalized[:-1] + '%'
+    elif normalized.endswith('*'):
+        normalized = normalized[:-1] + '%'
+
+    return normalized
 
 
 # ============================================================
@@ -98,13 +140,51 @@ def get_file_hash(file_bytes: bytes) -> str:
     return hashlib.sha256(file_bytes).hexdigest()
 
 
+def get_doc_type_from_folder(folder: str) -> str:
+    """
+    Определяет doc_type по папке документа.
+
+    Маппинг:
+        guidelines/ → clinical_guideline
+        policies/   → policy
+        codebooks/  → codebook
+        root/other  → unknown
+    """
+    if not folder:
+        return 'unknown'
+
+    folder_lower = folder.lower().strip('/')
+
+    # Direct mapping
+    mapping = {
+        'guidelines': 'clinical_guideline',
+        'guideline': 'clinical_guideline',
+        'policies': 'policy',
+        'policy': 'policy',
+        'codebooks': 'codebook',
+        'codebook': 'codebook',
+        'reference': 'codebook',
+    }
+
+    # Check exact match first
+    if folder_lower in mapping:
+        return mapping[folder_lower]
+
+    # Check if folder starts with known prefix
+    for key, value in mapping.items():
+        if folder_lower.startswith(key):
+            return value
+
+    return 'unknown'
+
+
 async def process_pdf_chunk(
-    chunk_bytes: bytes,
-    chunk_index: int,
-    start_page: int,
-    pages_in_chunk: int,
-    semaphore: asyncio.Semaphore,
-    max_retries: int = 3
+        chunk_bytes: bytes,
+        chunk_index: int,
+        start_page: int,
+        pages_in_chunk: int,
+        semaphore: asyncio.Semaphore,
+        max_retries: int = 3
 ) -> List[PageData]:
     """Обрабатывает чанк PDF с метаданными"""
 
@@ -177,10 +257,10 @@ async def process_pdf_chunk(
 
 
 async def parse_pdf_with_metadata(
-    file_bytes: bytes,
-    filename: str,
-    file_hash: str,
-    progress_callback=None
+        file_bytes: bytes,
+        filename: str,
+        file_hash: str,
+        progress_callback=None
 ) -> DocumentData:
     """Парсит PDF и извлекает метаданные"""
 
@@ -253,6 +333,14 @@ def save_document_to_db(doc: DocumentData, filepath: str):
     conn = get_db_connection()
     cursor = conn.cursor()
 
+    # Determine doc_type from filepath (folder) - приоритет над page-based detection
+    folder = os.path.dirname(filepath) if filepath else ''
+    doc_type = get_doc_type_from_folder(folder)
+
+    # Fallback to page-based detection if folder is unknown
+    if doc_type == 'unknown':
+        doc_type = doc.summary.get('doc_type', 'unknown')
+
     try:
         # Insert document
         cursor.execute("""
@@ -263,7 +351,7 @@ def save_document_to_db(doc: DocumentData, filepath: str):
             doc.file_hash,
             doc.filename,
             filepath,
-            doc.summary.get('doc_type'),
+            doc_type,
             doc.total_pages,
             doc.parsed_at,
             os.path.join(DOCUMENTS_DIR, doc.file_hash, 'content.json')
@@ -271,16 +359,44 @@ def save_document_to_db(doc: DocumentData, filepath: str):
 
         # Insert codes (if table exists)
         try:
-            for code_info in doc.summary.get('all_codes', []):
+            # First, delete old codes for this document (for reparse case)
+            cursor.execute("""
+                DELETE FROM document_codes WHERE document_id = ?
+            """, (doc.file_hash,))
+
+            # Collect pages for each code
+            code_pages = {}  # {(normalized_code, type): {'pages': set(), 'contexts': []}}
+
+            for page in doc.pages:
+                page_num = page.get('page', 0)
+                for code_info in page.get('codes', []):
+                    normalized_code = normalize_code_pattern(code_info.get('code', ''))
+                    code_type = code_info.get('type', 'Unknown')
+                    context = code_info.get('context', '')
+
+                    key = (normalized_code, code_type)
+                    if key not in code_pages:
+                        code_pages[key] = {'pages': set(), 'contexts': []}
+
+                    code_pages[key]['pages'].add(page_num)
+                    if context and context not in code_pages[key]['contexts']:
+                        code_pages[key]['contexts'].append(context)
+
+            # Insert aggregated codes with page_numbers as JSON
+            for (code, code_type), data in code_pages.items():
+                pages_json = json.dumps(sorted(data['pages']))
+                description = ', '.join(data['contexts'][:3])[:200]  # First 3 contexts
+
                 cursor.execute("""
                     INSERT OR IGNORE INTO document_codes 
-                    (document_id, code_pattern, code_type, description)
-                    VALUES (?, ?, ?, ?)
+                    (document_id, code_pattern, code_type, description, page_numbers)
+                    VALUES (?, ?, ?, ?, ?)
                 """, (
                     doc.file_hash,
-                    code_info['code'],
-                    code_info['type'],
-                    ', '.join(code_info.get('contexts', []))[:200]
+                    code,
+                    code_type,
+                    description,
+                    pages_json
                 ))
         except Exception as e:
             print(f"Warning: Could not insert codes: {e}")
@@ -526,6 +642,7 @@ async def parse_document_stream(doc_id: str, force: bool = False):
         if existing:
             async def already_parsed():
                 yield f"data: {json.dumps({'status': 'already_parsed', 'file_hash': file_hash, 'percent': 100})}\n\n"
+
             return StreamingResponse(already_parsed(), media_type="text/event-stream")
 
     # Find PDF file
@@ -682,8 +799,8 @@ async def parse_all_documents():
 
 @router.post("/documents/upload")
 async def upload_document(
-    file: UploadFile = File(...),
-    folder: str = Form("guidelines")
+        file: UploadFile = File(...),
+        folder: str = Form("guidelines")
 ):
     """Загрузить и распарсить документ"""
 
@@ -803,18 +920,37 @@ async def list_codes() -> List[CodeIndexItem]:
         conn.close()
         return []
 
-    codes = []
+    # Use dict to merge normalized duplicates (E11.* + E11.% → E11.%)
+    codes_map = {}
+
     for row in cursor.fetchall():
         code, code_type, doc_count = row[0], row[1], row[2]
 
-        # Just return count, not full document list
-        codes.append(CodeIndexItem(
-            code=code,
-            type=code_type or 'Unknown',
-            documents=[{'count': doc_count}]  # Placeholder for count
-        ))
+        # Normalize the code
+        normalized = normalize_code_pattern(code)
+        key = (normalized, code_type or 'Unknown')
+
+        if key in codes_map:
+            # Merge counts
+            codes_map[key]['count'] += doc_count
+        else:
+            codes_map[key] = {
+                'code': normalized,
+                'type': code_type or 'Unknown',
+                'count': doc_count
+            }
 
     conn.close()
+
+    # Convert to list
+    codes = []
+    for key, data in sorted(codes_map.items(), key=lambda x: (x[0][1], x[0][0])):
+        codes.append(CodeIndexItem(
+            code=data['code'],
+            type=data['type'],
+            documents=[{'count': data['count']}]
+        ))
+
     return codes
 
 
@@ -822,58 +958,105 @@ async def list_codes() -> List[CodeIndexItem]:
 async def get_code_details(code: str):
     """Детали по конкретному коду"""
 
+    # Normalize the requested code
+    normalized_code = normalize_code_pattern(code)
+
     conn = get_db_connection()
     cursor = conn.cursor()
 
     try:
+        # Search for both original and normalized code patterns, include page_numbers
         cursor.execute("""
-            SELECT d.file_hash, d.filename, d.doc_type, dc.code_type, dc.description
+            SELECT DISTINCT d.file_hash, d.filename, d.doc_type, dc.code_type, dc.description, dc.page_numbers
             FROM documents d
             JOIN document_codes dc ON d.file_hash = dc.document_id
-            WHERE dc.code_pattern = ?
-        """, (code,))
+            WHERE dc.code_pattern = ? OR dc.code_pattern = ?
+        """, (code, normalized_code))
     except:
         conn.close()
         raise HTTPException(status_code=404, detail="Code not found")
 
-    documents = []
-    code_type = None
-
-    for row in cursor.fetchall():
-        doc_id, filename, doc_type, c_type, desc = row
-        code_type = c_type
-
-        # Get detailed page info from JSON
-        doc_json = load_document_json(doc_id)
-        pages_info = []
-
-        if doc_json:
-            for page in doc_json.get('pages', []):
-                for page_code in page.get('codes', []):
-                    if page_code.get('code') == code:
-                        pages_info.append({
-                            'page': page['page'],
-                            'context': page_code.get('context'),
-                            'topics': page.get('topics', []),
-                            'content_preview': page.get('content', '')[:200] if page.get('content') else None
-                        })
-
-        documents.append({
-            'id': doc_id,
-            'filename': filename,
-            'doc_type': doc_type,
-            'pages': pages_info
-        })
-
+    rows = cursor.fetchall()
     conn.close()
 
-    if not documents:
+    if not rows:
         raise HTTPException(status_code=404, detail="Code not found")
 
+    # Group by document - use dict to deduplicate
+    documents_map = {}
+    code_type = None
+
+    for row in rows:
+        doc_id, filename, doc_type, c_type, desc, page_numbers_json = row
+        code_type = c_type
+
+        # Skip if already processed
+        if doc_id in documents_map:
+            continue
+
+        pages_info = []
+
+        # Try to use page_numbers from database first
+        if page_numbers_json:
+            try:
+                page_nums = json.loads(page_numbers_json)
+                # Get content preview from JSON only for display
+                doc_json = load_document_json(doc_id)
+                page_content_map = {}
+                if doc_json:
+                    for page in doc_json.get('pages', []):
+                        page_content_map[page.get('page')] = {
+                            'content': page.get('content', '')[:200] if page.get('content') else None,
+                            'topics': page.get('topics', [])
+                        }
+
+                for page_num in page_nums:
+                    page_data = page_content_map.get(page_num, {})
+                    pages_info.append({
+                        'page': page_num,
+                        'context': desc,
+                        'topics': page_data.get('topics', []),
+                        'content_preview': page_data.get('content')
+                    })
+            except json.JSONDecodeError:
+                pass
+
+        # Fallback: get pages from JSON if page_numbers not in DB
+        if not pages_info:
+            doc_json = load_document_json(doc_id)
+            seen_pages = set()
+
+            if doc_json:
+                for page in doc_json.get('pages', []):
+                    page_num = page.get('page')
+                    if page_num in seen_pages:
+                        continue
+
+                    for page_code in page.get('codes', []):
+                        page_code_normalized = normalize_code_pattern(page_code.get('code', ''))
+                        if page_code_normalized == normalized_code or page_code.get('code') == code:
+                            seen_pages.add(page_num)
+                            pages_info.append({
+                                'page': page_num,
+                                'context': page_code.get('context'),
+                                'topics': page.get('topics', []),
+                                'content_preview': page.get('content', '')[:200] if page.get('content') else None
+                            })
+                            break
+
+        # Add document if it has pages
+        if pages_info:
+            documents_map[doc_id] = {
+                'id': doc_id,
+                'filename': filename,
+                'doc_type': doc_type,
+                'pages': pages_info
+            }
+
     return {
-        'code': code,
+        'code': normalized_code,
         'type': code_type,
-        'documents': documents
+        'documents': list(documents_map.values())
     }
 
 
@@ -950,6 +1133,120 @@ async def get_stats():
     }
 
 
+@router.post("/migrate-codes")
+async def migrate_codes():
+    """
+    Миграция:
+    1. Добавляет колонку page_numbers если её нет
+    2. Нормализует wildcards (E11.* → E11.%)
+    3. Заполняет page_numbers из JSON файлов
+    4. Удаляет дубликаты
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    results = {
+        'column_added': False,
+        'patterns_normalized': 0,
+        'rows_updated': 0,
+        'duplicates_removed': 0,
+        'pages_populated': 0,
+        'total_unique_codes': 0
+    }
+
+    # 1. Add page_numbers column if not exists
+    try:
+        cursor.execute("ALTER TABLE document_codes ADD COLUMN page_numbers TEXT")
+        conn.commit()
+        results['column_added'] = True
+    except Exception as e:
+        # Column already exists
+        pass
+
+    # 2. Normalize wildcards
+    cursor.execute("""
+        SELECT DISTINCT code_pattern 
+        FROM document_codes 
+        WHERE code_pattern LIKE '%.*' 
+           OR code_pattern LIKE '%.-'
+           OR code_pattern LIKE '%.x'
+           OR code_pattern LIKE '%.X'
+    """)
+
+    codes_to_fix = cursor.fetchall()
+    updates = []
+
+    for (old_code,) in codes_to_fix:
+        new_code = normalize_code_pattern(old_code)
+        if new_code != old_code:
+            updates.append((old_code, new_code))
+
+    for old_code, new_code in updates:
+        cursor.execute("""
+            UPDATE document_codes 
+            SET code_pattern = ? 
+            WHERE code_pattern = ?
+        """, (new_code, old_code))
+        results['rows_updated'] += cursor.rowcount
+
+    results['patterns_normalized'] = len(updates)
+
+    # 3. Remove duplicates (keep first occurrence)
+    cursor.execute("""
+        DELETE FROM document_codes 
+        WHERE rowid NOT IN (
+            SELECT MIN(rowid) 
+            FROM document_codes 
+            GROUP BY document_id, code_pattern
+        )
+    """)
+    results['duplicates_removed'] = cursor.rowcount
+
+    conn.commit()
+
+    # 4. Populate page_numbers from JSON files (for records where it's NULL)
+    cursor.execute("""
+        SELECT DISTINCT document_id FROM document_codes 
+        WHERE page_numbers IS NULL
+    """)
+    docs_to_update = [row[0] for row in cursor.fetchall()]
+
+    for doc_id in docs_to_update:
+        doc_json = load_document_json(doc_id)
+        if not doc_json:
+            continue
+
+        # Collect pages for each code
+        code_pages = {}
+        for page in doc_json.get('pages', []):
+            page_num = page.get('page', 0)
+            for code_info in page.get('codes', []):
+                code = normalize_code_pattern(code_info.get('code', ''))
+                if code not in code_pages:
+                    code_pages[code] = set()
+                code_pages[code].add(page_num)
+
+        # Update records
+        for code, pages in code_pages.items():
+            pages_json = json.dumps(sorted(pages))
+            cursor.execute("""
+                UPDATE document_codes 
+                SET page_numbers = ?
+                WHERE document_id = ? AND code_pattern = ?
+            """, (pages_json, doc_id, code))
+            results['pages_populated'] += cursor.rowcount
+
+    conn.commit()
+
+    # Get final count
+    cursor.execute("SELECT COUNT(DISTINCT code_pattern) FROM document_codes")
+    results['total_unique_codes'] = cursor.fetchone()[0]
+
+    conn.close()
+
+    return results
+
+
 @router.get("/scan")
 async def scan_existing_files():
     """Сканирует существующие PDF файлы и добавляет их в базу (без парсинга)"""
@@ -965,6 +1262,9 @@ async def scan_existing_files():
             filepath = os.path.join(root, filename)
             relative_path = os.path.relpath(filepath, UPLOAD_DIR)
             folder = os.path.dirname(relative_path) or 'root'
+
+            # Determine doc_type from folder
+            doc_type = get_doc_type_from_folder(folder)
 
             # Calculate hash
             with open(filepath, 'rb') as f:
@@ -983,6 +1283,7 @@ async def scan_existing_files():
                 'filepath': filepath,  # Полный путь для чтения файла
                 'relative_path': relative_path,  # Относительный путь для UI
                 'folder': folder,
+                'doc_type': doc_type,
                 'total_pages': total_pages
             })
 
@@ -995,25 +1296,24 @@ async def scan_existing_files():
     for f in found_files:
         try:
             # Проверяем существует ли запись
-            cursor.execute("SELECT source_path FROM documents WHERE file_hash = ?", (f['file_hash'],))
+            cursor.execute("SELECT source_path, doc_type FROM documents WHERE file_hash = ?", (f['file_hash'],))
             existing = cursor.fetchone()
 
             if existing:
-                # Обновляем путь если изменился
-                if existing[0] != f['relative_path']:
-                    cursor.execute("""
-                        UPDATE documents 
-                        SET source_path = ?, filename = ?
-                        WHERE file_hash = ?
-                    """, (f['relative_path'], f['filename'], f['file_hash']))
-                    updated += 1
+                # Обновляем путь и doc_type если изменились
+                cursor.execute("""
+                    UPDATE documents 
+                    SET source_path = ?, filename = ?, doc_type = ?
+                    WHERE file_hash = ?
+                """, (f['relative_path'], f['filename'], f['doc_type'], f['file_hash']))
+                updated += 1
             else:
-                # Добавляем новую запись
+                # Добавляем новую запись с doc_type
                 cursor.execute("""
                     INSERT INTO documents 
-                    (file_hash, filename, source_path, total_pages)
-                    VALUES (?, ?, ?, ?)
-                """, (f['file_hash'], f['filename'], f['relative_path'], f['total_pages']))
+                    (file_hash, filename, source_path, doc_type, total_pages)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (f['file_hash'], f['filename'], f['relative_path'], f['doc_type'], f['total_pages']))
                 added += 1
         except Exception as e:
             print(f"Error processing {f['filename']}: {e}")
