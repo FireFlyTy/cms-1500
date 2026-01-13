@@ -1012,18 +1012,25 @@ const CodeList = ({
   generating
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [showMockOnly, setShowMockOnly] = useState(false);
+  const [showRules, setShowRules] = useState(true);
   const [showDiagnoses, setShowDiagnoses] = useState(true);
   const [showProcedures, setShowProcedures] = useState(true);
 
   const filterCodes = (codes) => codes.filter(c => {
     const matchesSearch = c.code.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesMockFilter = !showMockOnly || (c.rule_status?.has_rule && c.rule_status?.is_mock);
-    return matchesSearch && matchesMockFilter;
+    return matchesSearch;
   });
 
   const filteredDiagnoses = filterCodes(diagnoses);
   const filteredProcedures = filterCodes(procedures);
+
+  // Split by rule status
+  const diagnosesWithRules = filteredDiagnoses.filter(c => c.rule_status?.has_rule);
+  const diagnosesWithoutRules = filteredDiagnoses.filter(c => !c.rule_status?.has_rule);
+  const proceduresWithRules = filteredProcedures.filter(c => c.rule_status?.has_rule);
+  const proceduresWithoutRules = filteredProcedures.filter(c => !c.rule_status?.has_rule);
+
+  const allWithRules = [...diagnosesWithRules, ...proceduresWithRules];
   const allFiltered = [...filteredDiagnoses, ...filteredProcedures];
 
   const selectableCodes = allFiltered; // All codes can be selected (regeneration allowed)
@@ -1083,15 +1090,6 @@ const CodeList = ({
             />
           </div>
 
-          <button
-            onClick={() => setShowMockOnly(!showMockOnly)}
-            className={`px-3 py-2 text-sm rounded-lg whitespace-nowrap ${
-              showMockOnly ? 'bg-yellow-100 text-yellow-700' : 'text-gray-500 hover:bg-gray-100'
-            }`}
-          >
-            Mock only
-          </button>
-
           {selectableCodes.length > 0 && (
             <button
               onClick={() => onSelectAll(selectableCodes.map(c => c.code))}
@@ -1111,8 +1109,79 @@ const CodeList = ({
           </div>
         ) : (
           <div className="space-y-2">
-            {/* Diagnoses Section */}
-            {filteredDiagnoses.length > 0 && (
+            {/* RULES Section - Codes with generated rules (at the top) */}
+            {allWithRules.length > 0 && (
+              <div className="border border-green-200 rounded-lg overflow-hidden bg-green-50/30">
+                <button
+                  onClick={() => setShowRules(!showRules)}
+                  className="w-full flex items-center gap-2 px-3 py-2 bg-green-100 hover:bg-green-200 transition-colors"
+                >
+                  {showRules ? (
+                    <ChevronDown className="w-4 h-4 text-green-600" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4 text-green-600" />
+                  )}
+                  <CheckCircle className="w-4 h-4 text-green-600" />
+                  <span className="text-xs font-semibold text-green-800 uppercase">
+                    Rules
+                  </span>
+                  <span className="text-xs text-green-600">
+                    ({allWithRules.length})
+                  </span>
+                </button>
+                {showRules && (
+                  <div className="p-2 space-y-2">
+                    {/* Diagnoses with rules */}
+                    {diagnosesWithRules.length > 0 && (
+                      <div>
+                        <div className="text-[10px] font-semibold text-gray-500 uppercase px-2 py-1">
+                          Diagnoses ({diagnosesWithRules.length})
+                        </div>
+                        <div className="space-y-1">
+                          {diagnosesWithRules.map(code => (
+                            <CodeItem
+                              key={code.code}
+                              code={code}
+                              isSelected={selectedCodes.has(code.code)}
+                              canSelect={true}
+                              generating={generating}
+                              onToggleCode={onToggleCode}
+                              onDeleteRule={onDeleteRule}
+                              onViewRule={onViewRule}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {/* Procedures with rules */}
+                    {proceduresWithRules.length > 0 && (
+                      <div>
+                        <div className="text-[10px] font-semibold text-gray-500 uppercase px-2 py-1">
+                          Procedures ({proceduresWithRules.length})
+                        </div>
+                        <div className="space-y-1">
+                          {proceduresWithRules.map(code => (
+                            <CodeItem
+                              key={code.code}
+                              code={code}
+                              isSelected={selectedCodes.has(code.code)}
+                              canSelect={true}
+                              generating={generating}
+                              onToggleCode={onToggleCode}
+                              onDeleteRule={onDeleteRule}
+                              onViewRule={onViewRule}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Diagnoses Section - Codes WITHOUT rules */}
+            {diagnosesWithoutRules.length > 0 && (
               <div className="border rounded-lg overflow-hidden">
                 <button
                   onClick={() => setShowDiagnoses(!showDiagnoses)}
@@ -1127,33 +1196,30 @@ const CodeList = ({
                     Diagnoses
                   </span>
                   <span className="text-xs text-gray-400">
-                    ({filteredDiagnoses.length})
+                    ({diagnosesWithoutRules.length})
                   </span>
                 </button>
                 {showDiagnoses && (
                   <div className="p-2 space-y-1">
-                    {filteredDiagnoses.map(code => {
-                      const canSelect = true; // Allow regeneration of existing rules
-                      return (
-                        <CodeItem
-                          key={code.code}
-                          code={code}
-                          isSelected={selectedCodes.has(code.code)}
-                          canSelect={canSelect}
-                          generating={generating}
-                          onToggleCode={onToggleCode}
-                          onDeleteRule={onDeleteRule}
-                          onViewRule={onViewRule}
-                        />
-                      );
-                    })}
+                    {diagnosesWithoutRules.map(code => (
+                      <CodeItem
+                        key={code.code}
+                        code={code}
+                        isSelected={selectedCodes.has(code.code)}
+                        canSelect={true}
+                        generating={generating}
+                        onToggleCode={onToggleCode}
+                        onDeleteRule={onDeleteRule}
+                        onViewRule={onViewRule}
+                      />
+                    ))}
                   </div>
                 )}
               </div>
             )}
 
-            {/* Procedures Section */}
-            {filteredProcedures.length > 0 && (
+            {/* Procedures Section - Codes WITHOUT rules */}
+            {proceduresWithoutRules.length > 0 && (
               <div className="border rounded-lg overflow-hidden">
                 <button
                   onClick={() => setShowProcedures(!showProcedures)}
@@ -1168,26 +1234,23 @@ const CodeList = ({
                     Procedures
                   </span>
                   <span className="text-xs text-gray-400">
-                    ({filteredProcedures.length})
+                    ({proceduresWithoutRules.length})
                   </span>
                 </button>
                 {showProcedures && (
                   <div className="p-2 space-y-1">
-                    {filteredProcedures.map(code => {
-                      const canSelect = true; // Allow regeneration of existing rules
-                      return (
-                        <CodeItem
-                          key={code.code}
-                          code={code}
-                          isSelected={selectedCodes.has(code.code)}
-                          canSelect={canSelect}
-                          generating={generating}
-                          onToggleCode={onToggleCode}
-                          onDeleteRule={onDeleteRule}
-                          onViewRule={onViewRule}
-                        />
-                      );
-                    })}
+                    {proceduresWithoutRules.map(code => (
+                      <CodeItem
+                        key={code.code}
+                        code={code}
+                        isSelected={selectedCodes.has(code.code)}
+                        canSelect={true}
+                        generating={generating}
+                        onToggleCode={onToggleCode}
+                        onDeleteRule={onDeleteRule}
+                        onViewRule={onViewRule}
+                      />
+                    ))}
                   </div>
                 )}
               </div>
@@ -1226,7 +1289,6 @@ export default function RuleGeneration() {
   const [generating, setGenerating] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
   const [generationProgress, setGenerationProgress] = useState({});
-  const [clearing, setClearing] = useState(false);
   const [viewingCode, setViewingCode] = useState(null);
 
   const selectedCategoryInfo = categories.find(c => c.name === selectedCategory);
@@ -1464,24 +1526,6 @@ export default function RuleGeneration() {
     if (refetchCodes) refetchCodes();
   };
 
-  const handleClearMocks = async () => {
-    if (!window.confirm('Clear all mock rules? This will allow regeneration.')) return;
-
-    setClearing(true);
-    try {
-      const res = await fetch(`${API_BASE}/mock`, { method: 'DELETE' });
-      const data = await res.json();
-      alert(`Cleared ${data.deleted} mock rules`);
-      refetch();
-      if (refetchCodes) refetchCodes();
-    } catch (err) {
-      console.error('Failed to clear mocks:', err);
-      alert('Failed to clear mock rules');
-    } finally {
-      setClearing(false);
-    }
-  };
-
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
@@ -1493,28 +1537,13 @@ export default function RuleGeneration() {
               {total_with_rules} / {total_codes} codes have rules
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleClearMocks}
-              disabled={clearing}
-              className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-lg flex items-center gap-1"
-              title="Clear mock rules for regeneration"
-            >
-              {clearing ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Trash2 className="w-4 h-4" />
-              )}
-              Clear mocks
-            </button>
-            <button
-              onClick={refetch}
-              className="p-2 hover:bg-gray-100 rounded-lg"
-              title="Refresh"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
-          </div>
+          <button
+            onClick={refetch}
+            className="p-2 hover:bg-gray-100 rounded-lg"
+            title="Refresh data"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
