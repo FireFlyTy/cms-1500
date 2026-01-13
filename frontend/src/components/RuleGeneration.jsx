@@ -5,6 +5,7 @@ import {
   BookOpen, BrainCircuit, ShieldCheck, Gavel, Users, Swords
 } from 'lucide-react';
 import GenerationProgress from './GenerationProgress';
+import PdfViewer from './PdfViewer';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -300,26 +301,38 @@ const STEP_CONFIG = {
   finalization: { title: 'Final', icon: ShieldCheck, color: 'green' }
 };
 
-// Citation component with tooltip
+// Citation component - shows short filename + page, tooltip shows full details
 const Citation = ({ docId, page, anchor, docMap }) => {
   const [showTooltip, setShowTooltip] = useState(false);
   const doc = docMap?.[docId];
-  const filename = doc?.filename || `Document ${docId}`;
+  const filename = doc?.filename || `Doc ${docId}`;
+
+  // Create short filename: remove extension, truncate if too long
+  const shortName = filename
+    .replace(/\.(pdf|PDF)$/, '')
+    .replace(/_/g, ' ')
+    .slice(0, 20) + (filename.length > 24 ? '…' : '');
 
   return (
     <span
-      className="relative inline-flex items-center"
+      className="relative inline-flex items-center align-baseline"
       onMouseEnter={() => setShowTooltip(true)}
       onMouseLeave={() => setShowTooltip(false)}
     >
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs rounded border border-blue-200 cursor-help transition-colors">
-        <FileText className="w-3 h-3" />
-        <span className="font-medium">{anchor}</span>
-      </span>
+      <sup className="inline-flex items-center gap-0.5 px-1 py-0.5 mx-0.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-[10px] rounded cursor-help transition-colors font-medium">
+        <FileText className="w-2.5 h-2.5" />
+        <span>{shortName}</span>
+        <span className="text-slate-400">p.{page}</span>
+      </sup>
       {showTooltip && (
-        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg whitespace-nowrap z-50">
-          <div className="font-medium">{filename}</div>
-          <div className="text-gray-300">Page {page} • [{docId}]</div>
+        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg z-50 max-w-xs">
+          <div className="font-medium text-gray-100 mb-1">{filename}</div>
+          <div className="text-gray-400 text-[10px] mb-1">Page {page} • ID: {docId}</div>
+          {anchor && (
+            <div className="text-gray-300 italic text-[10px] border-t border-gray-700 pt-1 mt-1">
+              "{anchor.length > 80 ? anchor.slice(0, 80) + '…' : anchor}"
+            </div>
+          )}
           <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></span>
         </span>
       )}
@@ -337,70 +350,250 @@ const RuleContent = ({ content, docMap }) => {
   if (traceabilityIndex > -1) {
     cleanContent = cleanContent.substring(0, traceabilityIndex).trim();
   }
-  // Also try other variations
   const logIndex = cleanContent.indexOf('TRACEABILITY LOG');
   if (logIndex > -1) {
     cleanContent = cleanContent.substring(0, logIndex).trim();
   }
 
-  // Parse citations: [[doc_id:page | "anchor"]]
-  const citationRegex = /\[\[([a-f0-9]+):(\d+)\s*\|\s*"([^"]+)"\]\]/gi;
+  // Process text to replace citations with React components
+  // Format: [[doc_id:page | "anchor"]]
+  const processTextWithCitations = (text) => {
+    if (typeof text !== 'string') return text;
 
-  // Split content by citations
-  const parts = [];
-  let lastIndex = 0;
-  let match;
+    const regex = /\[\[([a-f0-9]+):(\d+)\s*\|\s*"([^"]+)"\]\]/gi;
+    const result = [];
+    let lastIndex = 0;
+    let match;
 
-  while ((match = citationRegex.exec(cleanContent)) !== null) {
-    // Add text before citation
-    if (match.index > lastIndex) {
-      parts.push({
-        type: 'text',
-        content: cleanContent.substring(lastIndex, match.index)
-      });
+    while ((match = regex.exec(text)) !== null) {
+      // Add text before citation
+      if (match.index > lastIndex) {
+        result.push(text.substring(lastIndex, match.index));
+      }
+
+      const docId = match[1];
+      const page = parseInt(match[2]);
+      const anchor = match[3];
+
+      result.push(
+        <Citation
+          key={`${match.index}-${docId}-${page}`}
+          docId={docId}
+          page={page}
+          anchor={anchor}
+          docMap={docMap}
+        />
+      );
+
+      lastIndex = regex.lastIndex;
     }
 
-    // Add citation
-    parts.push({
-      type: 'citation',
-      docId: match[1],
-      page: parseInt(match[2]),
-      anchor: match[3]
-    });
+    // Add remaining text
+    if (lastIndex < text.length) {
+      result.push(text.substring(lastIndex));
+    }
 
-    lastIndex = match.index + match[0].length;
-  }
+    return result.length > 0 ? result : text;
+  };
 
-  // Add remaining text
-  if (lastIndex < cleanContent.length) {
-    parts.push({
-      type: 'text',
-      content: cleanContent.substring(lastIndex)
-    });
-  }
+  // Custom markdown components that process citations in children
+  const MarkdownComponents = {
+    p: ({ children }) => (
+      <p className="mb-3 leading-relaxed text-gray-700">
+        {React.Children.map(children, processTextWithCitations)}
+      </p>
+    ),
+    li: ({ children }) => (
+      <li className="mb-1.5 text-gray-700">
+        {React.Children.map(children, processTextWithCitations)}
+      </li>
+    ),
+    h1: ({ children }) => (
+      <h1 className="text-xl font-bold text-gray-900 mb-4 pb-2 border-b border-gray-200">
+        {children}
+      </h1>
+    ),
+    h2: ({ children }) => (
+      <h2 className="text-lg font-bold text-gray-800 mt-6 mb-3">
+        {children}
+      </h2>
+    ),
+    h3: ({ children }) => (
+      <h3 className="text-base font-semibold text-gray-800 mt-4 mb-2">
+        {children}
+      </h3>
+    ),
+    strong: ({ children }) => (
+      <strong className="font-semibold text-gray-900">{children}</strong>
+    ),
+    ul: ({ children }) => (
+      <ul className="list-disc pl-5 my-3 space-y-1">{children}</ul>
+    ),
+    ol: ({ children }) => (
+      <ol className="list-decimal pl-5 my-3 space-y-1">{children}</ol>
+    ),
+  };
 
-  // Render parts
   return (
-    <div className="prose prose-sm max-w-none prose-headings:text-gray-800 prose-h1:text-xl prose-h2:text-lg prose-h3:text-base prose-li:my-0.5">
-      {parts.map((part, idx) => {
-        if (part.type === 'citation') {
-          return (
-            <Citation
-              key={idx}
-              docId={part.docId}
-              page={part.page}
-              anchor={part.anchor}
-              docMap={docMap}
-            />
-          );
-        }
-        // Render text as markdown
-        return (
-          <ReactMarkdown key={idx} remarkPlugins={[remarkGfm]}>
-            {part.content}
-          </ReactMarkdown>
-        );
-      })}
+    <div className="rule-content prose prose-sm max-w-none">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={MarkdownComponents}
+      >
+        {cleanContent}
+      </ReactMarkdown>
+    </div>
+  );
+};
+
+// Clickable Citation component for cross-reference with PDF
+const ClickableCitation = ({ docId, page, anchor, docMap, onCitationClick, isActive }) => {
+  const [showTooltip, setShowTooltip] = useState(false);
+  const doc = docMap?.[docId];
+  const filename = doc?.filename || `Doc ${docId}`;
+
+  const shortName = filename
+    .replace(/\.(pdf|PDF)$/, '')
+    .replace(/_/g, ' ')
+    .slice(0, 20) + (filename.length > 24 ? '…' : '');
+
+  return (
+    <span
+      className="relative inline-flex items-center align-baseline"
+      onMouseEnter={() => setShowTooltip(true)}
+      onMouseLeave={() => setShowTooltip(false)}
+    >
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onCitationClick?.(docId, page, anchor);
+        }}
+        className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 mx-0.5 text-[10px] rounded cursor-pointer transition-colors font-medium border ${
+          isActive
+            ? 'bg-teal-100 text-teal-800 border-teal-300 ring-1 ring-teal-400'
+            : 'bg-slate-100 hover:bg-teal-50 text-slate-600 hover:text-teal-700 border-slate-200 hover:border-teal-300'
+        }`}
+        title={`Click to view in PDF: ${filename} p.${page}`}
+      >
+        <BookOpen className="w-2.5 h-2.5" />
+        <span>{shortName}</span>
+        <span className="text-slate-400">p.{page}</span>
+      </button>
+      {showTooltip && (
+        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg z-50 max-w-xs">
+          <div className="font-medium text-gray-100 mb-1">{filename}</div>
+          <div className="text-gray-400 text-[10px] mb-1">Page {page} • ID: {docId}</div>
+          {anchor && (
+            <div className="text-gray-300 italic text-[10px] border-t border-gray-700 pt-1 mt-1">
+              "{anchor.length > 80 ? anchor.slice(0, 80) + '…' : anchor}"
+            </div>
+          )}
+          <div className="text-teal-400 text-[10px] mt-1">Click to view in PDF →</div>
+          <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></span>
+        </span>
+      )}
+    </span>
+  );
+};
+
+// RuleContent with clickable citations for PDF cross-reference
+const RuleContentWithClickableCitations = ({ content, docMap, onCitationClick, currentDocId }) => {
+  if (!content) return null;
+
+  let cleanContent = content;
+  const traceabilityIndex = cleanContent.indexOf('## TRACEABILITY LOG');
+  if (traceabilityIndex > -1) {
+    cleanContent = cleanContent.substring(0, traceabilityIndex).trim();
+  }
+  const logIndex = cleanContent.indexOf('TRACEABILITY LOG');
+  if (logIndex > -1) {
+    cleanContent = cleanContent.substring(0, logIndex).trim();
+  }
+
+  const processTextWithCitations = (text) => {
+    if (typeof text !== 'string') return text;
+
+    const regex = /\[\[([a-f0-9]+):(\d+)\s*\|\s*"([^"]+)"\]\]/gi;
+    const result = [];
+    let lastIndex = 0;
+    let match;
+
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        result.push(text.substring(lastIndex, match.index));
+      }
+
+      const docId = match[1];
+      const page = parseInt(match[2]);
+      const anchor = match[3];
+
+      result.push(
+        <ClickableCitation
+          key={`${match.index}-${docId}-${page}`}
+          docId={docId}
+          page={page}
+          anchor={anchor}
+          docMap={docMap}
+          onCitationClick={onCitationClick}
+          isActive={docId === currentDocId}
+        />
+      );
+
+      lastIndex = regex.lastIndex;
+    }
+
+    if (lastIndex < text.length) {
+      result.push(text.substring(lastIndex));
+    }
+
+    return result.length > 0 ? result : text;
+  };
+
+  const MarkdownComponents = {
+    p: ({ children }) => (
+      <p className="mb-3 leading-relaxed text-gray-700">
+        {React.Children.map(children, processTextWithCitations)}
+      </p>
+    ),
+    li: ({ children }) => (
+      <li className="mb-1.5 text-gray-700">
+        {React.Children.map(children, processTextWithCitations)}
+      </li>
+    ),
+    h1: ({ children }) => (
+      <h1 className="text-xl font-bold text-gray-900 mb-4 pb-2 border-b border-gray-200">
+        {children}
+      </h1>
+    ),
+    h2: ({ children }) => (
+      <h2 className="text-lg font-bold text-gray-800 mt-6 mb-3">
+        {children}
+      </h2>
+    ),
+    h3: ({ children }) => (
+      <h3 className="text-base font-semibold text-gray-800 mt-4 mb-2">
+        {children}
+      </h3>
+    ),
+    strong: ({ children }) => (
+      <strong className="font-semibold text-gray-900">{children}</strong>
+    ),
+    ul: ({ children }) => (
+      <ul className="list-disc pl-5 my-3 space-y-1">{children}</ul>
+    ),
+    ol: ({ children }) => (
+      <ol className="list-decimal pl-5 my-3 space-y-1">{children}</ol>
+    ),
+  };
+
+  return (
+    <div className="rule-content prose prose-sm max-w-none">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={MarkdownComponents}
+      >
+        {cleanContent}
+      </ReactMarkdown>
     </div>
   );
 };
@@ -500,6 +693,11 @@ const RuleViewer = ({ code, onClose }) => {
   const [activeTab, setActiveTab] = useState('final');
   const [error, setError] = useState(null);
 
+  // PDF viewer state
+  const [currentDocId, setCurrentDocId] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [searchTerm, setSearchTerm] = useState('');
+
   useEffect(() => {
     if (!code) return;
 
@@ -514,7 +712,13 @@ const RuleViewer = ({ code, onClose }) => {
 
         const logRes = await fetch(`${API_BASE}/codes/${encodeURIComponent(code)}/generation-log`);
         if (logRes.ok) {
-          setLog(await logRes.json());
+          const logData = await logRes.json();
+          setLog(logData);
+          // Set initial document
+          if (logData?.source_documents?.length > 0) {
+            setCurrentDocId(logData.source_documents[0].doc_id);
+            setCurrentPage(logData.source_documents[0].pages?.[0] || 1);
+          }
         }
       } catch (err) {
         setError(err.message);
@@ -531,15 +735,26 @@ const RuleViewer = ({ code, onClose }) => {
   // Handle new API response structure
   const isInherited = ruleResponse?.is_inherited;
   const matchedPattern = ruleResponse?.matched_pattern;
-  const rule = ruleResponse?.rule || ruleResponse; // Backward compatibility
+  const rule = ruleResponse?.rule || ruleResponse;
 
-  // Build doc_id → filename map
+  // Build doc_id → document info map
   const docMap = {};
   if (log?.source_documents) {
     log.source_documents.forEach(doc => {
       docMap[doc.doc_id] = doc;
     });
   }
+
+  const sourceDocuments = log?.source_documents || [];
+  const currentDoc = docMap[currentDocId];
+  const pdfUrl = currentDocId ? `http://localhost:8000/api/kb/documents/${currentDocId}/pdf` : null;
+
+  // Handle citation click - jump to document and page with highlighting
+  const handleCitationClick = (docId, page, anchor) => {
+    setCurrentDocId(docId);
+    setCurrentPage(page);
+    setSearchTerm(anchor || '');
+  };
 
   const tabs = [
     { id: 'final', label: 'Final Rule', icon: ShieldCheck },
@@ -579,7 +794,11 @@ const RuleViewer = ({ code, onClose }) => {
         )}
 
         <div className="p-4 max-h-96 overflow-y-auto">
-          <RuleContent content={stepData.output} docMap={docMap} />
+          <RuleContentWithClickableCitations
+            content={stepData.output}
+            docMap={docMap}
+            onCitationClick={handleCitationClick}
+          />
         </div>
 
         {stepData.citations_check && (
@@ -591,9 +810,9 @@ const RuleViewer = ({ code, onClose }) => {
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl w-full max-w-5xl max-h-[90vh] overflow-hidden shadow-2xl flex flex-col">
+      <div className="bg-white rounded-xl w-full max-w-[95vw] max-h-[95vh] overflow-hidden shadow-2xl flex flex-col">
         {/* Header */}
-        <div className="p-4 border-b flex items-center justify-between bg-gradient-to-r from-gray-50 to-white">
+        <div className="p-4 border-b flex items-center justify-between bg-gradient-to-r from-gray-50 to-white shrink-0">
           <div>
             <h3 className="font-semibold text-lg flex items-center gap-3">
               <span className="font-mono bg-gray-100 px-2 py-0.5 rounded">{code}</span>
@@ -629,7 +848,7 @@ const RuleViewer = ({ code, onClose }) => {
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b bg-gray-50/50">
+        <div className="flex border-b bg-gray-50/50 shrink-0">
           {tabs.map(tab => (
             <button
               key={tab.id}
@@ -646,55 +865,126 @@ const RuleViewer = ({ code, onClose }) => {
           ))}
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6">
+        {/* Content - Split view for Final Rule tab */}
+        <div className="flex-1 flex overflow-hidden">
           {loading ? (
-            <div className="flex items-center justify-center h-64">
+            <div className="flex-1 flex items-center justify-center">
               <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
             </div>
           ) : error ? (
-            <div className="text-red-500 p-4 bg-red-50 rounded-lg">{error}</div>
-          ) : activeTab === 'final' ? (
-            <div>
-              <RuleContent content={rule?.content} docMap={docMap} />
-
-              <CitationsSummary check={rule?.citations_summary} docMap={docMap} />
-
-              {log?.source_documents?.length > 0 && (
-                <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-                  <div className="font-medium text-sm mb-3 flex items-center gap-2">
-                    <FileText className="w-4 h-4" />
-                    Source Documents ({log.source_documents.length})
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {log.source_documents.map(doc => (
-                      <div
-                        key={doc.doc_id}
-                        className={`flex items-center gap-2 p-2 rounded border text-sm ${
-                          doc.via_pattern ? 'bg-purple-50 border-purple-200' : 'bg-white'
-                        }`}
-                      >
-                        <span className="font-mono text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">{doc.doc_id}</span>
-                        <span className="text-gray-700 truncate flex-1" title={doc.filename}>{doc.filename}</span>
-                        {doc.via_pattern && (
-                          <span className="text-xs px-1 py-0.5 bg-purple-100 text-purple-600 rounded" title={`Inherited via ${doc.via_pattern}`}>
-                            {doc.via_pattern}
-                          </span>
-                        )}
-                        <span className="text-gray-400 text-xs whitespace-nowrap">p.{doc.pages?.join(', ')}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+            <div className="flex-1 p-6">
+              <div className="text-red-500 p-4 bg-red-50 rounded-lg">{error}</div>
             </div>
+          ) : activeTab === 'final' ? (
+            <>
+              {/* Left: PDF Viewer */}
+              <div className="w-1/2 border-r bg-slate-100 flex flex-col overflow-hidden">
+                {/* Document selector */}
+                {sourceDocuments.length > 0 && (
+                  <div className="p-2 border-b bg-white flex items-center gap-2 shrink-0">
+                    <FileText className="w-4 h-4 text-gray-400" />
+                    <select
+                      value={currentDocId || ''}
+                      onChange={(e) => {
+                        const newDocId = e.target.value;
+                        setCurrentDocId(newDocId);
+                        const doc = docMap[newDocId];
+                        if (doc?.pages?.[0]) {
+                          setCurrentPage(doc.pages[0]);
+                        }
+                        setSearchTerm('');
+                      }}
+                      className="flex-1 text-sm border rounded px-2 py-1 bg-white"
+                    >
+                      {sourceDocuments.map(doc => (
+                        <option key={doc.doc_id} value={doc.doc_id}>
+                          [{doc.doc_id}] {doc.filename} (p.{doc.pages?.join(', ')})
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-xs text-gray-500">
+                      Page {currentPage}
+                    </span>
+                  </div>
+                )}
+
+                {/* PDF Viewer */}
+                <div className="flex-1 overflow-hidden">
+                  {pdfUrl ? (
+                    <PdfViewer
+                      url={pdfUrl}
+                      pageNumber={currentPage}
+                      searchText={searchTerm}
+                    />
+                  ) : (
+                    <div className="flex items-center justify-center h-full text-gray-400">
+                      <div className="text-center">
+                        <FileText className="w-12 h-12 mx-auto mb-2 opacity-30" />
+                        <p>No PDF available</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Right: Rule Content */}
+              <div className="w-1/2 overflow-y-auto p-6">
+                <RuleContentWithClickableCitations
+                  content={rule?.content}
+                  docMap={docMap}
+                  onCitationClick={handleCitationClick}
+                  currentDocId={currentDocId}
+                />
+
+                <CitationsSummary check={rule?.citations_summary} docMap={docMap} />
+
+                {sourceDocuments.length > 0 && (
+                  <div className="mt-6 p-4 bg-gray-50 rounded-lg">
+                    <div className="font-medium text-sm mb-3 flex items-center gap-2">
+                      <FileText className="w-4 h-4" />
+                      Source Documents ({sourceDocuments.length})
+                    </div>
+                    <div className="grid grid-cols-1 gap-2">
+                      {sourceDocuments.map(doc => (
+                        <button
+                          key={doc.doc_id}
+                          onClick={() => {
+                            setCurrentDocId(doc.doc_id);
+                            setCurrentPage(doc.pages?.[0] || 1);
+                            setSearchTerm('');
+                          }}
+                          className={`flex items-center gap-2 p-2 rounded border text-sm text-left transition-colors ${
+                            currentDocId === doc.doc_id
+                              ? 'bg-blue-50 border-blue-300 ring-2 ring-blue-200'
+                              : doc.via_pattern
+                                ? 'bg-purple-50 border-purple-200 hover:bg-purple-100'
+                                : 'bg-white hover:bg-gray-50'
+                          }`}
+                        >
+                          <span className="font-mono text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">{doc.doc_id}</span>
+                          <span className="text-gray-700 truncate flex-1" title={doc.filename}>{doc.filename}</span>
+                          {doc.via_pattern && (
+                            <span className="text-xs px-1 py-0.5 bg-purple-100 text-purple-600 rounded">
+                              {doc.via_pattern}
+                            </span>
+                          )}
+                          <span className="text-gray-400 text-xs whitespace-nowrap">p.{doc.pages?.join(', ')}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
           ) : (
-            <div className="space-y-4">
-              {log?.pipeline ? (
-                Object.entries(log.pipeline).map(([step, data]) => renderStepContent(step, data))
-              ) : (
-                <div className="text-gray-500 text-center py-8">No pipeline log available</div>
-              )}
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="space-y-4">
+                {log?.pipeline ? (
+                  Object.entries(log.pipeline).map(([step, data]) => renderStepContent(step, data))
+                ) : (
+                  <div className="text-gray-500 text-center py-8">No pipeline log available</div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -736,9 +1026,7 @@ const CodeList = ({
   const filteredProcedures = filterCodes(procedures);
   const allFiltered = [...filteredDiagnoses, ...filteredProcedures];
 
-  const selectableCodes = allFiltered.filter(c =>
-    !c.rule_status?.has_rule || c.rule_status?.is_mock
-  );
+  const selectableCodes = allFiltered; // All codes can be selected (regeneration allowed)
   const allSelected = selectableCodes.length > 0 &&
     selectableCodes.every(c => selectedCodes.has(c.code));
 
@@ -845,7 +1133,7 @@ const CodeList = ({
                 {showDiagnoses && (
                   <div className="p-2 space-y-1">
                     {filteredDiagnoses.map(code => {
-                      const canSelect = !code.rule_status?.has_rule || code.rule_status?.is_mock;
+                      const canSelect = true; // Allow regeneration of existing rules
                       return (
                         <CodeItem
                           key={code.code}
@@ -886,7 +1174,7 @@ const CodeList = ({
                 {showProcedures && (
                   <div className="p-2 space-y-1">
                     {filteredProcedures.map(code => {
-                      const canSelect = !code.rule_status?.has_rule || code.rule_status?.is_mock;
+                      const canSelect = true; // Allow regeneration of existing rules
                       return (
                         <CodeItem
                           key={code.code}

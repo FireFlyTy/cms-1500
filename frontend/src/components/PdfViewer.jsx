@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
+import "react-pdf/dist/Page/TextLayer.css";
+import "react-pdf/dist/Page/AnnotationLayer.css";
 import { Loader2, ZoomIn, ZoomOut } from "lucide-react";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -206,7 +208,6 @@ function PdfViewer({ url, pageNumber, searchText }) {
 
     const lowerFullText = fullText.toLowerCase();
     let foundMatch = false;
-    let paragraphBounds = null;
 
     // Ищем каждую часть
     for (const searchPart of searchParts) {
@@ -221,25 +222,10 @@ function PdfViewer({ url, pageNumber, searchText }) {
         const matchEnd = matchStart + lowerSearch.length;
         foundMatch = true;
 
-        // Находим границы параграфа
-        paragraphBounds = findParagraphBounds(spanMap, matchStart, matchEnd);
-        
         console.log(`✅ Найдено: "${lowerSearch.substring(0, 50)}..."`);
-        console.log(`📄 Границы параграфа: span ${paragraphBounds.startIdx} - ${paragraphBounds.endIdx}`);
 
-        // Подсвечиваем весь параграф (светлый фон)
-        for (let i = paragraphBounds.startIdx; i <= paragraphBounds.endIdx; i++) {
-          const item = spanMap[i];
-          item.span.classList.add("pdf-hl-paragraph");
-          item.span.style.backgroundColor = 'rgba(59, 130, 246, 0.1)'; // Light blue
-          
-          // Левая граница для первого span в параграфе
-          if (i === paragraphBounds.startIdx) {
-            item.span.style.borderLeft = '3px solid rgba(59, 130, 246, 0.6)';
-          }
-        }
-
-        // Подсвечиваем точное совпадение (яркий фон)
+        // Подсвечиваем ТОЛЬКО точное совпадение (яркий фон)
+        let firstMatchedSpan = null;
         spanMap.forEach(({ start, end, span, text }) => {
           const hasOverlap = (start < matchEnd && end > matchStart);
           if (!hasOverlap) return;
@@ -252,14 +238,14 @@ function PdfViewer({ url, pageNumber, searchText }) {
             span.classList.add("pdf-hl");
             span.style.backgroundColor = 'rgba(250, 204, 21, 0.6)'; // Yellow
             span.style.boxShadow = '0 0 0 2px rgba(250, 204, 21, 0.8)';
+            if (!firstMatchedSpan) firstMatchedSpan = span;
           }
         });
 
-        // Скроллим к началу параграфа
-        if (paragraphBounds.startIdx >= 0) {
-          const firstSpan = spanMap[paragraphBounds.startIdx].span;
+        // Скроллим к первому совпадению
+        if (firstMatchedSpan) {
           setTimeout(() => {
-            firstSpan.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            firstMatchedSpan.scrollIntoView({ behavior: 'smooth', block: 'center' });
           }, 100);
         }
 
@@ -351,10 +337,31 @@ function PdfViewer({ url, pageNumber, searchText }) {
         </Document>
       </div>
 
-      {/* CSS для подсветки */}
+      {/* CSS для react-pdf и подсветки */}
       <style>{`
-        .pdf-hl-paragraph {
-          transition: background-color 0.2s ease;
+        .react-pdf__Page {
+          position: relative;
+        }
+        .react-pdf__Page__canvas {
+          display: block;
+        }
+        .react-pdf__Page__textContent {
+          position: absolute !important;
+          top: 0 !important;
+          left: 0 !important;
+          transform-origin: 0 0;
+        }
+        .react-pdf__Page__textContent span {
+          color: transparent !important;
+          position: absolute;
+          white-space: pre;
+          pointer-events: all;
+          transform-origin: 0% 0%;
+        }
+        .react-pdf__Page__textContent span.pdf-hl {
+          color: transparent !important;
+          background-color: rgba(250, 204, 21, 0.5) !important;
+          border-radius: 2px;
         }
         .pdf-hl {
           transition: all 0.2s ease;

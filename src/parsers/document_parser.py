@@ -537,14 +537,16 @@ For EACH page in order, use this EXACT format:
 
 [PAGE_START]
 [PAGE_TYPE: clinical|administrative|reference|toc|empty]
-[CODES: E11.9 (ICD-10), J1950 (HCPCS), 99213 (CPT)]
+[CODES: CODE1 (TYPE1), CODE2 (TYPE2), ...]
 [TOPICS: topic1, topic2, topic3]
 [MEDICATIONS: drug1, drug2]
 
-## Page content in markdown here...
-
-Tables converted to markdown format...
+Page content as plain text here...
 [PAGE_END]
+
+CODES format: each code MUST have type in parentheses.
+TYPE is one of: ICD-10, HCPCS, CPT, NDC
+Example: [CODES: E11.9 (ICD-10), J1950 (HCPCS), 99213 (CPT)]
 
 For pages to skip, use:
 
@@ -572,14 +574,23 @@ For pages to skip, use:
 
 === CODE EXTRACTION RULES ===
 
-Look for and extract these code types:
-- ICD-10: E11.*, Z79.4, F32.*, M54.5 (diagnosis codes)
-- HCPCS: J1950, A4253, E0607 (supplies, drugs, equipment)
-- CPT: 99213, 96372, 83036 (procedures)
-- NDC: 11-digit drug codes if present
+Extract medical codes in this EXACT format:
+[CODES: CODE (TYPE), CODE (TYPE), ...]
 
-Format: CODE (TYPE) or CODE (TYPE: brief context)
-Example: [CODES: E11.9 (ICD-10: T2DM), J1950 (HCPCS: semaglutide), 99213 (CPT)]
+TYPE must be ONE of these 4 values ONLY:
+- ICD-10 (diagnosis codes starting with letter: E11.9, Z79.4, F32.1)
+- HCPCS (letter + 4 digits: J1950, A4253, E0607)
+- CPT (5 digits: 99213, 96372, 47533)
+- NDC (drug codes: 0002-1433-80)
+
+CORRECT examples:
+[CODES: E11.9 (ICD-10), J1950 (HCPCS), 99213 (CPT)]
+[CODES: Z79.4 (ICD-10), A4253 (HCPCS)]
+
+WRONG - do not put descriptions in TYPE:
+[CODES: 99213 (Office visit)] ← WRONG, should be (CPT)
+[CODES: J1950 (semaglutide injection)] ← WRONG, should be (HCPCS)
+[CODES: 47533 (BILIARY TRACT)] ← WRONG, should be (CPT)
 
 If no codes on page: [CODES: -]
 
@@ -601,32 +612,47 @@ If no medications: [MEDICATIONS: -]
 
 1. Output EXACTLY {pages_count} page blocks
 2. Preserve text EXACTLY as written (typos, spacing)
-3. Convert tables to markdown format
+3. Convert tables to PLAIN TEXT - use bullet lists or "Key: Value" format, NO markdown tables
 4. Remove printed page numbers (standalone "182", "45" at top/bottom)
 5. Remove repeated headers/footers
 6. Keep clinical content, criteria, and rules intact
+7. NO HTML tags (<br>, etc.) - plain text only
+
+=== TABLE CONVERSION ===
+
+IMPORTANT: Do NOT use markdown table syntax (|---|). Convert tables to plain text:
+
+Original table:
+| Drug | Brand | Code |
+|------|-------|------|
+| Semaglutide | Ozempic | J1950 |
+
+Convert to:
+- Semaglutide (Ozempic): J1950
+- Dulaglutide (Trulicity): J3490
+
+Or use "Key: Value" format:
+Drug: Semaglutide, Brand: Ozempic, Code: J1950
 
 === EXAMPLE OUTPUT ===
 
 [PAGE_START]
 [PAGE_TYPE: clinical]
-[CODES: E11.9 (ICD-10: T2DM), J1950 (HCPCS: semaglutide injection)]
+[CODES: E11.9 (ICD-10), J1950 (HCPCS), J3490 (HCPCS)]
 [TOPICS: GLP-1 indications, metformin failure, HbA1c targets]
 [MEDICATIONS: semaglutide, dulaglutide, liraglutide]
 
-## Glucagon-Like Peptide-1 (GLP-1) Receptor Agonists
+Glucagon-Like Peptide-1 (GLP-1) Receptor Agonists
 
-### Indications
-
+Indications:
 GLP-1 receptor agonists are indicated for the treatment of type 2 diabetes mellitus (E11.*) in adults when:
-
 - Metformin is contraindicated or not tolerated
 - HbA1c remains above target despite metformin monotherapy
 
-| Drug | Brand Name | J-Code |
-|------|------------|--------|
-| Semaglutide | Ozempic | J1950 |
-| Dulaglutide | Trulicity | J3490 |
+Available GLP-1 agents:
+- Semaglutide (Ozempic): J1950
+- Dulaglutide (Trulicity): J3490
+- Liraglutide (Victoza): J3490
 [PAGE_END]
 
 [PAGE_START]

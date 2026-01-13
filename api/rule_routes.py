@@ -356,8 +356,8 @@ def get_rule_status(code: str, cascade: bool = True) -> Dict:
 
 def _check_rule_exists(pattern: str) -> Dict:
     """Проверяет существование правила для конкретного паттерна."""
-    # Normalize pattern for filesystem
-    safe_pattern = pattern.replace(".", "_").replace("/", "_").replace("%", "X").replace(":", "-")
+    # Normalize pattern for filesystem (keep % as-is to match saved folder names)
+    safe_pattern = pattern.replace(".", "_").replace("/", "_").replace(":", "-")
 
     # Check versioned structure first
     versioned_path = os.path.join(RULES_DIR, safe_pattern)

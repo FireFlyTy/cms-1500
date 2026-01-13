@@ -641,11 +641,32 @@ class RuleGenerator:
         match = re.search(r'VERDICT:\s*(\w+)', text, re.IGNORECASE)
         return match.group(1) if match else ""
     
+    def _get_next_version(self, code: str) -> int:
+        """Finds the next version number for a code."""
+        code_dir = code.replace(".", "_").replace("/", "_")
+        code_path = os.path.join(RULES_DIR, code_dir)
+
+        if not os.path.exists(code_path):
+            return 1
+
+        # Find existing versions (v1, v2, v3, ...)
+        existing_versions = []
+        for name in os.listdir(code_path):
+            if name.startswith('v') and name[1:].isdigit():
+                existing_versions.append(int(name[1:]))
+
+        if not existing_versions:
+            return 1
+
+        return max(existing_versions) + 1
+
     def _build_pipeline_result(self, code: str, total_ms: int) -> PipelineResult:
         """Собирает полный результат пайплайна."""
+        next_version = self._get_next_version(code)
+
         return PipelineResult(
             code=code,
-            version=1,  # TODO: versioning
+            version=next_version,
             created_at=datetime.utcnow().isoformat() + "Z",
             source_documents=[
                 {

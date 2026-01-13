@@ -55,20 +55,20 @@ router = APIRouter(prefix="/api/kb", tags=["Knowledge Base"])
 def normalize_code_pattern(code: str) -> str:
     """
     Нормализует wildcard паттерны и диапазоны в кодах.
-
+    
     Wildcards:
         E11.*  → E11.%
         E11.-  → E11.%
         E11.x  → E11.%
-
+    
     Ranges:
         47531-47541 → 47531:47541
     """
     if not code:
         return code
-
+    
     normalized = code.upper().strip()
-
+    
     # Check for range pattern: CODE-CODE (but not wildcard like E11.-)
     range_match = re.match(r'^([A-Z0-9\.]+)-([A-Z0-9\.]+)$', normalized)
     if range_match:
@@ -76,7 +76,7 @@ def normalize_code_pattern(code: str) -> str:
         # Make sure it's actually a range (not E11.- wildcard)
         if len(end) > 1 and not end.startswith('.'):
             return f"{start}:{end}"
-
+    
     # Replace wildcard characters at the end
     if normalized.endswith('.*'):
         normalized = normalized[:-1] + '%'
@@ -86,8 +86,41 @@ def normalize_code_pattern(code: str) -> str:
         normalized = normalized[:-1] + '%'
     elif normalized.endswith('*'):
         normalized = normalized[:-1] + '%'
-
+    
     return normalized
+
+
+def normalize_code_type(code: str, raw_type: str) -> str:
+    """Нормализует тип кода. Если raw_type невалидный — определяет по формату."""
+    valid_types = {'ICD-10', 'HCPCS', 'CPT', 'NDC'}
+    
+    if raw_type and raw_type.upper() in valid_types:
+        return raw_type.upper()
+    
+    # Auto-detect from code format
+    code_upper = (code or '').upper()
+    
+    # ICD-10: starts with letter, has numbers (E11.9, F32.1, Z79.4, E08:E13)
+    if re.match(r'^[A-TV-Z]\d', code_upper):
+        return 'ICD-10'
+    
+    # HCPCS: starts with letter + 4 digits (J1950, A4253)
+    if re.match(r'^[A-Z]\d{4}$', code_upper):
+        return 'HCPCS'
+    
+    # CPT: 5 digits (99213, 47533)
+    if re.match(r'^\d{5}$', code_upper):
+        return 'CPT'
+    
+    # CPT range: 5digits:5digits (64400:64530)
+    if re.match(r'^\d{5}:\d{5}$', code_upper):
+        return 'CPT'
+    
+    # NDC: 10-11 digits with dashes
+    if re.match(r'^\d{4,5}-\d{3,4}-\d{1,2}$', code_upper):
+        return 'NDC'
+    
+    return 'Unknown'
 
 
 # ============================================================
@@ -117,6 +150,8 @@ class DocumentResponse(BaseModel):
     categories: List[str] = []
     codes: List[Dict] = []
     stages: List[str] = []
+    topics: List[str] = []
+    medications: List[str] = []
 
 
 class CodeIndexItem(BaseModel):
@@ -363,30 +398,30 @@ def save_document_to_db(doc: DocumentData, filepath: str):
             cursor.execute("""
                 DELETE FROM document_codes WHERE document_id = ?
             """, (doc.file_hash,))
-
-            # Collect pages for each code
-            code_pages = {}  # {(normalized_code, type): {'pages': set(), 'contexts': []}}
-
+            
+            # Collect pages for each code - key by code only to avoid duplicates
+            code_pages = {}
+            
             for page in doc.pages:
-                page_num = page.get('page', 0)
-                for code_info in page.get('codes', []):
-                    normalized_code = normalize_code_pattern(code_info.get('code', ''))
-                    code_type = code_info.get('type', 'Unknown')
-                    context = code_info.get('context', '')
-
-                    key = (normalized_code, code_type)
-                    if key not in code_pages:
-                        code_pages[key] = {'pages': set(), 'contexts': []}
-
-                    code_pages[key]['pages'].add(page_num)
-                    if context and context not in code_pages[key]['contexts']:
-                        code_pages[key]['contexts'].append(context)
-
+                page_num = page.page  # PageData.page attribute
+                for code_info in page.codes:  # PageData.codes is List[CodeInfo]
+                    normalized_code = normalize_code_pattern(code_info.code)
+                    code_type = normalize_code_type(normalized_code, code_info.type)
+                    context = code_info.context or ''
+                    
+                    # Key by code only to prevent duplicates
+                    if normalized_code not in code_pages:
+                        code_pages[normalized_code] = {'type': code_type, 'pages': set(), 'contexts': []}
+                    
+                    code_pages[normalized_code]['pages'].add(page_num)
+                    if context and context not in code_pages[normalized_code]['contexts']:
+                        code_pages[normalized_code]['contexts'].append(context)
+            
             # Insert aggregated codes with page_numbers as JSON
-            for (code, code_type), data in code_pages.items():
+            for code, data in code_pages.items():
                 pages_json = json.dumps(sorted(data['pages']))
                 description = ', '.join(data['contexts'][:3])[:200]  # First 3 contexts
-
+                
                 cursor.execute("""
                     INSERT OR IGNORE INTO document_codes 
                     (document_id, code_pattern, code_type, description, page_numbers)
@@ -394,7 +429,7 @@ def save_document_to_db(doc: DocumentData, filepath: str):
                 """, (
                     doc.file_hash,
                     code,
-                    code_type,
+                    data['type'],
                     description,
                     pages_json
                 ))
@@ -472,9 +507,17 @@ async def list_documents() -> List[DocumentResponse]:
         except:
             pass
 
-        # Load JSON for content_pages count
+        # Load JSON for content_pages count and stats
         doc_json = load_document_json(doc_id)
-        content_pages = doc_json.get('summary', {}).get('content_page_count', 0) if doc_json else 0
+        content_pages = 0
+        topics = []
+        medications = []
+        
+        if doc_json:
+            summary = doc_json.get('summary', {})
+            content_pages = summary.get('content_page_count', 0)
+            topics = summary.get('topics', [])
+            medications = summary.get('medications', [])
 
         documents.append(DocumentResponse(
             id=doc_id,
@@ -489,7 +532,9 @@ async def list_documents() -> List[DocumentResponse]:
             analyzed_at=row[8],
             categories=categories,
             codes=codes,
-            stages=stages
+            stages=stages,
+            topics=topics,
+            medications=medications
         ))
 
     conn.close()
@@ -523,12 +568,16 @@ async def get_document_text(doc_id: str):
 
 @router.get("/documents/{doc_id}/pdf")
 async def get_document_pdf(doc_id: str):
-    """Получить PDF файл"""
+    """Получить PDF файл. doc_id can be full hash or first 8 chars."""
 
     conn = get_db_connection()
     cursor = conn.cursor()
+    # Try exact match first, then prefix match (short doc_id)
     cursor.execute("SELECT source_path, filename FROM documents WHERE file_hash = ?", (doc_id,))
     row = cursor.fetchone()
+    if not row and len(doc_id) == 8:
+        cursor.execute("SELECT source_path, filename FROM documents WHERE file_hash LIKE ?", (doc_id + '%',))
+        row = cursor.fetchone()
     conn.close()
 
     if not row or not row[0]:
@@ -905,7 +954,7 @@ async def list_codes() -> List[CodeIndexItem]:
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Get all codes with document count in one query
+    # Get all codes with document count - GROUP BY only code_pattern to avoid duplicates
     try:
         cursor.execute("""
             SELECT 
@@ -913,8 +962,8 @@ async def list_codes() -> List[CodeIndexItem]:
                 dc.code_type,
                 COUNT(DISTINCT dc.document_id) as doc_count
             FROM document_codes dc
-            GROUP BY dc.code_pattern, dc.code_type
-            ORDER BY dc.code_type, dc.code_pattern
+            GROUP BY dc.code_pattern
+            ORDER BY dc.code_pattern
         """)
     except:
         conn.close()
@@ -923,10 +972,13 @@ async def list_codes() -> List[CodeIndexItem]:
     codes = []
     for row in cursor.fetchall():
         code, code_type, doc_count = row[0], row[1], row[2]
-
+        
+        # Normalize code_type - detect from code pattern if invalid
+        normalized_type = normalize_code_type(code, code_type)
+        
         codes.append(CodeIndexItem(
             code=code,
-            type=code_type or 'Unknown',
+            type=normalized_type,
             documents=[{'count': doc_count}]
         ))
 
@@ -937,7 +989,7 @@ async def list_codes() -> List[CodeIndexItem]:
 @router.get("/codes/{code}")
 async def get_code_details(code: str):
     """Детали по конкретному коду"""
-
+    
     # Normalize the requested code
     normalized_code = normalize_code_pattern(code)
 
@@ -975,7 +1027,7 @@ async def get_code_details(code: str):
             continue
 
         pages_info = []
-
+        
         # Try to use page_numbers from database first
         if page_numbers_json:
             try:
@@ -989,7 +1041,7 @@ async def get_code_details(code: str):
                             'content': page.get('content', '')[:200] if page.get('content') else None,
                             'topics': page.get('topics', [])
                         }
-
+                
                 for page_num in page_nums:
                     page_data = page_content_map.get(page_num, {})
                     pages_info.append({
@@ -1000,12 +1052,12 @@ async def get_code_details(code: str):
                     })
             except json.JSONDecodeError:
                 pass
-
+        
         # Fallback: get pages from JSON if page_numbers not in DB
         if not pages_info:
             doc_json = load_document_json(doc_id)
             seen_pages = set()
-
+            
             if doc_json:
                 for page in doc_json.get('pages', []):
                     page_num = page.get('page')
@@ -1113,21 +1165,161 @@ async def get_stats():
     }
 
 
+@router.post("/cleanup-orphaned-codes")
+async def cleanup_orphaned_codes():
+    """
+    Удаляет коды для документов которых больше нет в базе.
+    Запустить после удаления/репарсинга документов.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Count before
+    cursor.execute("SELECT COUNT(*) FROM document_codes")
+    before = cursor.fetchone()[0]
+    
+    # Delete orphaned codes
+    cursor.execute("""
+        DELETE FROM document_codes 
+        WHERE document_id NOT IN (SELECT file_hash FROM documents)
+    """)
+    orphaned = cursor.rowcount
+    
+    conn.commit()
+    conn.close()
+    
+    return {
+        'before': before,
+        'orphaned_deleted': orphaned,
+        'after': before - orphaned
+    }
+
+
+@router.post("/clear-all-codes")
+async def clear_all_codes():
+    """
+    Полная очистка таблицы document_codes.
+    После этого нужно заново распарсить документы.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM document_codes")
+    count = cursor.fetchone()[0]
+    
+    cursor.execute("DELETE FROM document_codes")
+    conn.commit()
+    conn.close()
+    
+    return {
+        'deleted': count,
+        'message': 'All codes cleared. Re-parse documents to rebuild.'
+    }
+
+
+@router.post("/rebuild-codes-from-json")
+async def rebuild_codes_from_json():
+    """
+    Пересоздаёт document_codes из существующих JSON файлов.
+    Быстро — без вызова Gemini API.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    results = {
+        'documents_processed': 0,
+        'documents_with_json': 0,
+        'codes_inserted': 0,
+        'errors': []
+    }
+    
+    # Ensure page_numbers column exists
+    try:
+        cursor.execute("ALTER TABLE document_codes ADD COLUMN page_numbers TEXT")
+        conn.commit()
+    except:
+        pass
+    
+    # Get all documents
+    cursor.execute("SELECT file_hash, filename FROM documents")
+    documents = cursor.fetchall()
+    results['documents_processed'] = len(documents)
+    
+    for doc_row in documents:
+        doc_id = doc_row[0]
+        filename = doc_row[1]
+        
+        # Load JSON
+        doc_json = load_document_json(doc_id)
+        if not doc_json:
+            continue
+        
+        results['documents_with_json'] += 1
+        
+        try:
+            # Delete old codes
+            cursor.execute("DELETE FROM document_codes WHERE document_id = ?", (doc_id,))
+            
+            # Collect codes from pages - key by code only to avoid duplicates
+            code_pages = {}
+            
+            for page in doc_json.get('pages', []):
+                page_num = page.get('page', 0)
+                for code_info in page.get('codes', []):
+                    code = code_info.get('code', '')
+                    if not code:
+                        continue
+                    
+                    normalized_code = normalize_code_pattern(code)
+                    raw_type = code_info.get('type', '')
+                    code_type = normalize_code_type(normalized_code, raw_type)
+                    context = code_info.get('context', '')
+                    
+                    # Key by code only to prevent duplicates with different types
+                    if normalized_code not in code_pages:
+                        code_pages[normalized_code] = {'type': code_type, 'pages': set(), 'contexts': []}
+                    
+                    code_pages[normalized_code]['pages'].add(page_num)
+                    if context and len(code_pages[normalized_code]['contexts']) < 3:
+                        code_pages[normalized_code]['contexts'].append(context)
+            
+            # Insert codes
+            for code, data in code_pages.items():
+                pages_json = json.dumps(sorted(data['pages']))
+                description = ', '.join(data['contexts'])[:200]
+                
+                cursor.execute("""
+                    INSERT OR IGNORE INTO document_codes 
+                    (document_id, code_pattern, code_type, description, page_numbers)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (doc_id, code, data['type'], description, pages_json))
+                
+                results['codes_inserted'] += 1
+                
+        except Exception as e:
+            results['errors'].append(f"{filename}: {str(e)}")
+    
+    conn.commit()
+    conn.close()
+    
+    return results
+
+
 @router.post("/migrate-codes")
 async def migrate_codes(force: bool = False):
     """
-    Миграция:
+    Миграция: 
     1. Добавляет колонку page_numbers если её нет
     2. Нормализует wildcards (E11.* → E11.%)
     3. Заполняет page_numbers из JSON файлов
     4. Удаляет дубликаты
-
+    
     Query params:
         force=true - сбросить и перезаполнить все page_numbers
     """
     conn = get_db_connection()
     cursor = conn.cursor()
-
+    
     results = {
         'column_added': False,
         'patterns_normalized': 0,
@@ -1137,7 +1329,7 @@ async def migrate_codes(force: bool = False):
         'pages_reset': 0,
         'total_unique_codes': 0
     }
-
+    
     # 1. Add page_numbers column if not exists
     try:
         cursor.execute("ALTER TABLE document_codes ADD COLUMN page_numbers TEXT")
@@ -1146,13 +1338,13 @@ async def migrate_codes(force: bool = False):
     except Exception as e:
         # Column already exists
         pass
-
+    
     # 1b. If force=true, reset all page_numbers
     if force:
         cursor.execute("UPDATE document_codes SET page_numbers = NULL")
         results['pages_reset'] = cursor.rowcount
         conn.commit()
-
+    
     # 2. Normalize wildcards
     cursor.execute("""
         SELECT DISTINCT code_pattern 
@@ -1163,15 +1355,15 @@ async def migrate_codes(force: bool = False):
            OR code_pattern LIKE '%.X'
            OR (code_pattern LIKE '%*' AND code_pattern NOT LIKE '%.*')
     """)
-
+    
     codes_to_fix = cursor.fetchall()
     updates = []
-
+    
     for (old_code,) in codes_to_fix:
         new_code = normalize_code_pattern(old_code)
         if new_code != old_code:
             updates.append((old_code, new_code))
-
+    
     for old_code, new_code in updates:
         cursor.execute("""
             UPDATE document_codes 
@@ -1179,9 +1371,9 @@ async def migrate_codes(force: bool = False):
             WHERE code_pattern = ?
         """, (new_code, old_code))
         results['rows_updated'] += cursor.rowcount
-
+    
     results['patterns_normalized'] = len(updates)
-
+    
     # 3. Remove duplicates (keep first occurrence)
     cursor.execute("""
         DELETE FROM document_codes 
@@ -1192,54 +1384,54 @@ async def migrate_codes(force: bool = False):
         )
     """)
     results['duplicates_removed'] = cursor.rowcount
-
+    
     conn.commit()
-
+    
     # 4. Populate page_numbers from JSON files (for records where it's NULL)
     cursor.execute("""
         SELECT DISTINCT document_id FROM document_codes 
         WHERE page_numbers IS NULL
     """)
     docs_to_update = [row[0] for row in cursor.fetchall()]
-
+    
     results['docs_to_process'] = len(docs_to_update)
     results['docs_json_found'] = 0
-
+    
     for doc_id in docs_to_update:
         doc_json = load_document_json(doc_id)
         if not doc_json:
             continue
-
+        
         results['docs_json_found'] += 1
-
+        
         # Collect pages for each code (both original and normalized)
         code_pages = {}  # normalized_code -> set of pages
         original_codes = {}  # normalized_code -> original_code (for fallback)
-
+        
         for page in doc_json.get('pages', []):
             page_num = page.get('page', 0)
             for code_info in page.get('codes', []):
                 original_code = code_info.get('code', '').upper().strip()
                 normalized_code = normalize_code_pattern(original_code)
-
+                
                 if normalized_code not in code_pages:
                     code_pages[normalized_code] = set()
                     original_codes[normalized_code] = original_code
-
+                
                 code_pages[normalized_code].add(page_num)
-
+        
         # Update records - try both normalized and original code patterns
         for normalized_code, pages in code_pages.items():
             pages_json = json.dumps(sorted(pages))
             original_code = original_codes.get(normalized_code, normalized_code)
-
+            
             # Try normalized first
             cursor.execute("""
                 UPDATE document_codes 
                 SET page_numbers = ?
                 WHERE document_id = ? AND code_pattern = ? AND page_numbers IS NULL
             """, (pages_json, doc_id, normalized_code))
-
+            
             if cursor.rowcount > 0:
                 results['pages_populated'] += cursor.rowcount
             else:
@@ -1250,15 +1442,15 @@ async def migrate_codes(force: bool = False):
                     WHERE document_id = ? AND code_pattern = ? AND page_numbers IS NULL
                 """, (pages_json, doc_id, original_code))
                 results['pages_populated'] += cursor.rowcount
-
+    
     conn.commit()
-
+    
     # Get final count
     cursor.execute("SELECT COUNT(DISTINCT code_pattern) FROM document_codes")
     results['total_unique_codes'] = cursor.fetchone()[0]
-
+    
     conn.close()
-
+    
     return results
 
 

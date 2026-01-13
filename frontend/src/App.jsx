@@ -4,12 +4,33 @@ import {
   CheckCircle, Clock, AlertCircle, X, Eye, Edit, Folder, File,
   Code, Tag, BookOpen, Layers, ExternalLink, Upload, RefreshCw,
   ZoomIn, ZoomOut, ChevronLeft, Hash, Play, Loader2, Filter, FolderSearch,
-  Zap
+  Zap, Shield
 } from 'lucide-react';
 import RuleGeneration from './components/RuleGeneration';
 
 // API base URL
 const API_BASE = 'http://localhost:8000/api/kb';
+
+// ============================================================
+// DOCUMENT TYPE ICONS
+// ============================================================
+
+const DocTypeIcon = ({ docType, className = "w-4 h-4" }) => {
+  const type = (docType || '').toLowerCase();
+
+  if (type.includes('guideline')) {
+    return <BookOpen className={`${className} text-gray-500`} />;
+  }
+  if (type.includes('polic')) {
+    return <Shield className={`${className} text-gray-500`} />;
+  }
+  if (type.includes('codebook') || type.includes('coding')) {
+    return <Hash className={`${className} text-gray-500`} />;
+  }
+
+  // Default
+  return <FileText className={`${className} text-gray-400`} />;
+};
 
 // ============================================================
 // API HOOKS
@@ -85,12 +106,12 @@ const PdfPageViewer = ({ docId, page, zoom }) => {
   // Load PDF.js library
   useEffect(() => {
     if (window.pdfjsLib) return;
-    
+
     const script = document.createElement('script');
     script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
     script.async = true;
     script.onload = () => {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
         'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     };
     document.body.appendChild(script);
@@ -99,24 +120,24 @@ const PdfPageViewer = ({ docId, page, zoom }) => {
   // Load PDF document
   useEffect(() => {
     if (!docId) return;
-    
+
     const loadPdf = async () => {
       setLoading(true);
       setError(null);
-      
+
       // Wait for PDF.js to load
       let attempts = 0;
       while (!window.pdfjsLib && attempts < 50) {
         await new Promise(r => setTimeout(r, 100));
         attempts++;
       }
-      
+
       if (!window.pdfjsLib) {
         setError('PDF.js failed to load');
         setLoading(false);
         return;
       }
-      
+
       try {
         const pdfUrl = `${API_BASE}/documents/${docId}/pdf`;
         const doc = await window.pdfjsLib.getDocument(pdfUrl).promise;
@@ -128,42 +149,42 @@ const PdfPageViewer = ({ docId, page, zoom }) => {
         setLoading(false);
       }
     };
-    
+
     loadPdf();
   }, [docId]);
 
   // Render page
   useEffect(() => {
     if (!pdfDoc || !canvasRef.current || rendering) return;
-    
+
     const renderPage = async () => {
       setRendering(true);
-      
+
       try {
         const pageNum = Math.min(Math.max(1, page), pdfDoc.numPages);
         const pdfPage = await pdfDoc.getPage(pageNum);
-        
+
         const scale = zoom / 100 * 1.5; // Base scale for good quality
         const viewport = pdfPage.getViewport({ scale });
-        
+
         const canvas = canvasRef.current;
         const context = canvas.getContext('2d');
-        
+
         canvas.height = viewport.height;
         canvas.width = viewport.width;
-        
+
         await pdfPage.render({
           canvasContext: context,
           viewport: viewport
         }).promise;
-        
+
       } catch (err) {
         console.error('Render error:', err);
       } finally {
         setRendering(false);
       }
     };
-    
+
     renderPage();
   }, [pdfDoc, page, zoom]);
 
@@ -184,7 +205,7 @@ const PdfPageViewer = ({ docId, page, zoom }) => {
         <div className="text-center text-gray-400">
           <FileText className="w-16 h-16 mx-auto mb-3 opacity-30" />
           <p className="font-medium">{error}</p>
-          <a 
+          <a
             href={`${API_BASE}/documents/${docId}/pdf`}
             target="_blank"
             rel="noopener noreferrer"
@@ -236,30 +257,8 @@ const StatusBadge = ({ status }) => {
   );
 };
 
-const CodeTag = ({ code, type, onClick }) => {
-  // Monochrome design - subtle differentiation by type
-  const styles = {
-    'ICD-10': 'bg-gray-100 text-gray-700 hover:bg-gray-200',
-    'HCPCS': 'bg-gray-100 text-gray-700 hover:bg-gray-200',
-    'CPT': 'bg-gray-100 text-gray-700 hover:bg-gray-200',
-  };
-  const prefixes = {
-    'ICD-10': '',
-    'HCPCS': '',
-    'CPT': '',
-  };
-  return (
-    <button
-      onClick={onClick}
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-mono transition-colors ${styles[type] || 'bg-gray-100 text-gray-700'}`}
-    >
-      {code}
-    </button>
-  );
-};
-
-// Document statistics summary
-const DocumentStats = ({ doc, onCodeClick }) => {
+// Document statistics summary - compact version
+const DocumentStats = ({ doc }) => {
   const codes = doc.codes || [];
   const topics = doc.topics || [];
   const medications = doc.medications || [];
@@ -272,79 +271,46 @@ const DocumentStats = ({ doc, onCodeClick }) => {
     return acc;
   }, {});
 
-  const icdCodes = codesByType['ICD-10'] || [];
-  const cptCodes = codesByType['CPT'] || [];
-  const hcpcsCodes = codesByType['HCPCS'] || [];
+  const icdCount = (codesByType['ICD-10'] || []).length;
+  const cptCount = (codesByType['CPT'] || []).length;
+  const hcpcsCount = (codesByType['HCPCS'] || []).length;
 
-  // No data - show placeholder
+  // No data - show nothing
   if (codes.length === 0 && topics.length === 0 && medications.length === 0) {
     return null;
   }
 
+  // Build code type breakdown
+  const codeBreakdown = [];
+  if (icdCount > 0) codeBreakdown.push(`${icdCount} ICD-10`);
+  if (cptCount > 0) codeBreakdown.push(`${cptCount} CPT`);
+  if (hcpcsCount > 0) codeBreakdown.push(`${hcpcsCount} HCPCS`);
+
   return (
-    <div className="mt-2 space-y-1.5">
-      {/* Stats row */}
-      <div className="flex items-center gap-4 text-xs text-gray-500">
-        {icdCodes.length > 0 && (
-          <span title="ICD-10 diagnosis codes">
-            <span className="font-medium text-gray-700">{icdCodes.length}</span> ICD-10
-          </span>
-        )}
-        {cptCodes.length > 0 && (
-          <span title="CPT procedure codes">
-            <span className="font-medium text-gray-700">{cptCodes.length}</span> CPT
-          </span>
-        )}
-        {hcpcsCodes.length > 0 && (
-          <span title="HCPCS codes">
-            <span className="font-medium text-gray-700">{hcpcsCodes.length}</span> HCPCS
-          </span>
-        )}
-        {medications.length > 0 && (
-          <span title="Medications mentioned">
-            <span className="font-medium text-gray-700">{medications.length}</span> meds
-          </span>
-        )}
-        {topics.length > 0 && (
-          <span title="Topics/concepts">
-            <span className="font-medium text-gray-700">{topics.length}</span> topics
-          </span>
-        )}
-      </div>
-
-      {/* Top items preview */}
-      <div className="flex flex-wrap gap-1">
-        {/* Top 3 ICD-10 */}
-        {icdCodes.slice(0, 3).map((c, i) => (
-          <button
-            key={`icd-${i}`}
-            onClick={(e) => { e.stopPropagation(); onCodeClick?.(c.code); }}
-            className="px-1.5 py-0.5 bg-gray-100 hover:bg-gray-200 rounded text-xs font-mono text-gray-600 transition-colors"
-            title={`ICD-10: ${c.code}`}
-          >
-            {c.code}
-          </button>
-        ))}
-
-        {/* Top 2 CPT/HCPCS */}
-        {[...cptCodes, ...hcpcsCodes].slice(0, 2).map((c, i) => (
-          <button
-            key={`proc-${i}`}
-            onClick={(e) => { e.stopPropagation(); onCodeClick?.(c.code); }}
-            className="px-1.5 py-0.5 bg-gray-100 hover:bg-gray-200 rounded text-xs font-mono text-gray-600 transition-colors"
-            title={`${c.type}: ${c.code}`}
-          >
-            {c.code}
-          </button>
-        ))}
-
-        {/* More indicator */}
-        {codes.length > 5 && (
-          <span className="px-1.5 py-0.5 text-xs text-gray-400">
-            +{codes.length - 5}
-          </span>
-        )}
-      </div>
+    <div className="mt-2 flex items-center gap-4 text-xs text-gray-500">
+      {codes.length > 0 && (
+        <span className="flex items-center gap-1">
+          <Hash className="w-3 h-3" />
+          <span>Codes ({codes.length})</span>
+          {codeBreakdown.length > 0 && (
+            <span className="text-gray-400 ml-1">
+              {codeBreakdown.join(', ')}
+            </span>
+          )}
+        </span>
+      )}
+      {topics.length > 0 && (
+        <span className="flex items-center gap-1">
+          <Tag className="w-3 h-3" />
+          <span>Topics ({topics.length})</span>
+        </span>
+      )}
+      {medications.length > 0 && (
+        <span className="flex items-center gap-1">
+          <span>💊</span>
+          <span>Meds ({medications.length})</span>
+        </span>
+      )}
     </div>
   );
 };
@@ -431,7 +397,7 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
           {/* Row 1: Title */}
           <div className="px-4 py-3 flex items-center justify-between border-b border-slate-200">
             <div className="flex items-center gap-3">
-              <File className="w-6 h-6 text-red-500" />
+              <DocTypeIcon docType={document.summary?.doc_type} className="w-6 h-6" />
               <div>
                 <h2 className="font-bold text-lg text-gray-900">{document.filename}</h2>
                 <div className="flex items-center gap-3 text-xs text-gray-500">
@@ -974,15 +940,6 @@ const CodeIndexView = ({ onDocumentClick, onClose }) => {
     return true;
   });
 
-  // Debug log
-  console.log('CodeIndex filter:', {
-    searchQuery,
-    filterType,
-    totalCodes: codes.length,
-    filteredCount: filteredCodes.length,
-    sampleCode: codes[0]
-  });
-
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl w-full max-w-5xl h-[80vh] flex flex-col overflow-hidden shadow-2xl">
@@ -1036,9 +993,9 @@ const CodeIndexView = ({ onDocumentClick, onClose }) => {
               ) : filteredCodes.length === 0 ? (
                 <div className="p-4 text-center text-gray-400 text-sm">No codes found</div>
               ) : (
-                filteredCodes.map(code => (
+                filteredCodes.map((code, idx) => (
                   <button
-                    key={code.code}
+                    key={`${code.code}-${idx}`}
                     onClick={() => setSelectedCode(code.code)}
                     className={`w-full px-4 py-3 border-b text-left hover:bg-gray-50 transition-colors ${
                       selectedCode === code.code ? 'bg-blue-50 border-l-4 border-l-blue-600' : ''
@@ -1085,7 +1042,7 @@ const CodeIndexView = ({ onDocumentClick, onClose }) => {
                     <div key={doc.id} className="border rounded-lg overflow-hidden">
                       <div className="p-3 bg-slate-50 flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                          <File className="w-4 h-4 text-red-500" />
+                          <DocTypeIcon docType={doc.doc_type} />
                           <span className="font-medium text-sm">{doc.filename}</span>
                         </div>
                         <button
@@ -1364,7 +1321,7 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                           className="flex items-center gap-2 cursor-pointer"
                           onClick={() => onDocumentClick(doc.id)}
                         >
-                          <File className="w-4 h-4 text-red-500" />
+                          <DocTypeIcon docType={doc.doc_type} />
                           <span className="font-medium text-sm">{doc.filename}</span>
                           {doc.payer && (
                             <span className="px-1.5 py-0.5 bg-orange-100 text-orange-700 rounded text-xs">
@@ -1447,7 +1404,7 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                     </div>
 
                     {/* Document statistics */}
-                    <DocumentStats doc={doc} onCodeClick={onCodeClick} />
+                    <DocumentStats doc={doc} />
                   </div>
                 );
                 })}

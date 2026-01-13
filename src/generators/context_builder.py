@@ -104,7 +104,6 @@ def get_wildcard_patterns_for_code(code: str) -> List[str]:
 
     # Remove duplicates and return
     return list(dict.fromkeys(patterns))
-    return file_hash[:8]
 
 
 def build_sources_context(
@@ -155,11 +154,12 @@ def build_sources_context(
         if document_ids:
             doc_placeholders = ','.join('?' * len(document_ids))
             cursor.execute(f"""
-                SELECT DISTINCT 
-                    dc.document_id, 
+                SELECT DISTINCT
+                    dc.document_id,
                     d.file_hash,
                     d.filename,
-                    dc.code_pattern
+                    dc.code_pattern,
+                    d.doc_type
                 FROM document_codes dc
                 JOIN documents d ON dc.document_id = d.file_hash
                 WHERE (dc.code_pattern = ? OR dc.code_pattern IN ({pattern_placeholders}))
@@ -168,11 +168,12 @@ def build_sources_context(
             """, [code] + wildcard_patterns + document_ids)
         else:
             cursor.execute(f"""
-                SELECT DISTINCT 
-                    dc.document_id, 
+                SELECT DISTINCT
+                    dc.document_id,
                     d.file_hash,
                     d.filename,
-                    dc.code_pattern
+                    dc.code_pattern,
+                    d.doc_type
                 FROM document_codes dc
                 JOIN documents d ON dc.document_id = d.file_hash
                 WHERE (dc.code_pattern = ? OR dc.code_pattern IN ({pattern_placeholders}))
@@ -190,14 +191,15 @@ def build_sources_context(
             )
 
         # Collect unique documents and their matched patterns
-        # Row format: (document_id, file_hash, filename, code_pattern)
+        # Row format: (document_id, file_hash, filename, code_pattern, doc_type)
         docs_data: Dict[str, Dict] = {}
-        for document_id, file_hash, filename, matched_pattern in rows:
+        for document_id, file_hash, filename, matched_pattern, doc_type in rows:
             if file_hash not in docs_data:
                 docs_data[file_hash] = {
                     'file_hash': file_hash,
                     'filename': filename,
                     'document_id': document_id,
+                    'doc_type': doc_type,  # 'codebook', 'clinical_guideline', 'policy', or None
                     'matched_patterns': set()
                 }
             docs_data[file_hash]['matched_patterns'].add(matched_pattern)
@@ -213,6 +215,7 @@ def build_sources_context(
         for file_hash, data in docs_data.items():
             filename = data['filename']
             matched_patterns = data['matched_patterns']
+            doc_type = data.get('doc_type')
 
             # Load content.json
             content_path = os.path.join(DOCUMENTS_DIR, file_hash, 'content.json')
@@ -222,34 +225,40 @@ def build_sources_context(
             with open(content_path, 'r', encoding='utf-8') as f:
                 doc_content = json.load(f)
 
-            # Find pages where this code or matching wildcards appear
-            pages_with_code = set()
-            for page_data in doc_content.get('pages', []):
-                page_codes = page_data.get('codes', [])
-                for code_info in page_codes:
-                    page_code = code_info.get('code', '').upper()
-                    # Check exact match
-                    if page_code == code.upper():
-                        pages_with_code.add(page_data['page'])
-                        break
-                    # Check if page code is a wildcard that matches our code
-                    if page_code in matched_patterns:
-                        pages_with_code.add(page_data['page'])
-                        break
-
-            # If no specific pages found, check summary
-            if not pages_with_code:
-                # Fallback: include all pages (document matched but no page-level info)
+            # For CODEBOOKS: use entire document (all pages)
+            # For GUIDELINES and others: use only pages where code appears
+            if doc_type == 'codebook':
+                # Use ALL pages from the codebook
                 pages_with_code = {p['page'] for p in doc_content.get('pages', []) if p.get('content')}
+            else:
+                # Find pages where this code or matching wildcards appear
+                pages_with_code = set()
+                for page_data in doc_content.get('pages', []):
+                    page_codes = page_data.get('codes', [])
+                    for code_info in page_codes:
+                        page_code = code_info.get('code', '').upper()
+                        # Check exact match
+                        if page_code == code.upper():
+                            pages_with_code.add(page_data['page'])
+                            break
+                        # Check if page code is a wildcard that matches our code
+                        if page_code in matched_patterns:
+                            pages_with_code.add(page_data['page'])
+                            break
 
-            # Expand pages if requested
-            if expand_pages > 0:
-                expanded = set()
-                for page in pages_with_code:
-                    for p in range(page - expand_pages, page + expand_pages + 1):
-                        if p > 0:
-                            expanded.add(p)
-                pages_with_code = expanded
+                # If no specific pages found, check summary
+                if not pages_with_code:
+                    # Fallback: include all pages (document matched but no page-level info)
+                    pages_with_code = {p['page'] for p in doc_content.get('pages', []) if p.get('content')}
+
+                # Expand pages if requested (only for non-codebook docs)
+                if expand_pages > 0:
+                    expanded = set()
+                    for page in pages_with_code:
+                        for p in range(page - expand_pages, page + expand_pages + 1):
+                            if p > 0:
+                                expanded.add(p)
+                    pages_with_code = expanded
 
             # Generate doc_id from file_hash
             doc_id = get_doc_id(file_hash)
@@ -393,7 +402,7 @@ def get_available_documents_for_code(code: str, db_connection=None) -> List[Dict
     FILTER: Excludes policy documents
 
     Returns:
-        List of {"document_id": str, "filename": str, "doc_id": str, "file_hash": str, "via_wildcard": str|None}
+        List of {"document_id": str, "filename": str, "doc_id": str, "file_hash": str, "doc_type": str, "via_wildcard": str|None}
     """
     from src.db.connection import get_db_connection
 
@@ -411,7 +420,8 @@ def get_available_documents_for_code(code: str, db_connection=None) -> List[Dict
                 dc.document_id,
                 d.filename,
                 d.file_hash,
-                dc.code_pattern
+                dc.code_pattern,
+                d.doc_type
             FROM document_codes dc
             JOIN documents d ON dc.document_id = d.file_hash
             WHERE (dc.code_pattern = ? OR dc.code_pattern IN ({pattern_placeholders}))
@@ -423,7 +433,7 @@ def get_available_documents_for_code(code: str, db_connection=None) -> List[Dict
         result = []
         seen_hashes = set()
 
-        for document_id, filename, file_hash, matched_pattern in rows:
+        for document_id, filename, file_hash, matched_pattern, doc_type in rows:
             if file_hash in seen_hashes:
                 continue
             seen_hashes.add(file_hash)
@@ -450,11 +460,10 @@ def get_available_documents_for_code(code: str, db_connection=None) -> List[Dict
                 'filename': filename,
                 'doc_id': get_doc_id(file_hash),
                 'file_hash': file_hash,
-                'pages': sorted(pages),
+                'doc_type': doc_type,  # 'codebook', 'clinical_guideline', or None
+                'pages': sorted(pages) if doc_type != 'codebook' else [],  # Empty for codebooks (whole doc used)
                 'via_wildcard': matched_pattern if is_wildcard else None
             })
-
-        return result
 
         return result
 
