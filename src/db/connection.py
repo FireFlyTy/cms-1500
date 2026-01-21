@@ -36,9 +36,9 @@ def init_database():
         with open(schema_path, 'r') as f:
             content = f.read()
             
-        # Extract SQL from triple-quoted string
+        # Extract SQL from SCHEMA variable's triple-quoted string
         import re
-        sql_match = re.search(r'"""(.*?)"""', content, re.DOTALL)
+        sql_match = re.search(r'SCHEMA\s*=\s*"""(.*?)"""', content, re.DOTALL)
         if sql_match:
             sql = sql_match.group(1)
             cursor.executescript(sql)

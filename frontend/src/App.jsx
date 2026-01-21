@@ -7,9 +7,10 @@ import {
   Zap, Shield
 } from 'lucide-react';
 import RuleGeneration from './components/RuleGeneration';
+import PdfViewer from './components/PdfViewer';
 
 // API base URL
-const API_BASE = 'http://localhost:8000/api/kb';
+const API_BASE = 'http://localhost:8001/api/kb';
 
 // ============================================================
 // DOCUMENT TYPE ICONS
@@ -338,6 +339,7 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
   const [showPageTopics, setShowPageTopics] = useState(false);
   const [showPageMeds, setShowPageMeds] = useState(false);
   const [codeSearch, setCodeSearch] = useState('');
+  const [searchText, setSearchText] = useState('');  // For PDF text highlighting
 
   useEffect(() => {
     fetch(`${API_BASE}/documents/${docId}`)
@@ -383,9 +385,18 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
   const allTopics = document.summary?.topics || [];
   const allMedications = document.summary?.medications || [];
 
-  // Filter codes by search
+  // Filter codes by search (searches code, contexts, and anchors)
   const filteredCodes = codeSearch
-    ? allCodes.filter(c => c.code.toLowerCase().includes(codeSearch.toLowerCase()))
+    ? allCodes.filter(c => {
+        const search = codeSearch.toLowerCase();
+        // Search in code
+        if (c.code.toLowerCase().includes(search)) return true;
+        // Search in contexts
+        if (c.contexts?.some(ctx => ctx.toLowerCase().includes(search))) return true;
+        // Search in anchors
+        if (c.anchors?.some(a => a.text.toLowerCase().includes(search))) return true;
+        return false;
+      })
     : allCodes;
 
   return (
@@ -438,6 +449,23 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                 <span className="text-xs font-medium text-yellow-700">
                   Highlighting: <code className="font-mono">{highlightCode}</code>
                 </span>
+              </div>
+            )}
+
+            {/* Citation search indicator */}
+            {searchText && (
+              <div className="flex items-center gap-2 px-2 py-1 bg-yellow-100 rounded-lg">
+                <Search className="w-3 h-3 text-yellow-600" />
+                <span className="text-xs font-medium text-yellow-700 max-w-48 truncate">
+                  Citation: "{searchText}"
+                </span>
+                <button
+                  onClick={() => setSearchText('')}
+                  className="p-0.5 hover:bg-yellow-200 rounded"
+                  title="Clear citation highlight"
+                >
+                  <X className="w-3 h-3 text-yellow-600" />
+                </button>
               </div>
             )}
 
@@ -552,12 +580,12 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
               </div>
             </div>
 
-            {/* PDF Viewer with PDF.js */}
-            <div className="flex-1 overflow-auto flex justify-center bg-slate-200">
-              <PdfPageViewer
-                docId={docId}
-                page={selectedPage}
-                zoom={zoom}
+            {/* PDF Viewer with text highlighting */}
+            <div className="flex-1 overflow-hidden bg-slate-200">
+              <PdfViewer
+                url={`${API_BASE}/documents/${docId}/pdf`}
+                pageNumber={selectedPage}
+                searchText={searchText}
               />
             </div>
           </div>
@@ -727,7 +755,7 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                       <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                       <input
                         type="text"
-                        placeholder="Search codes..."
+                        placeholder="Search codes, citations..."
                         value={codeSearch}
                         onChange={(e) => setCodeSearch(e.target.value)}
                         className="w-full pl-9 pr-3 py-2 border rounded-lg text-sm"
@@ -755,37 +783,71 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                                 <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${expandedCode === codeInfo.code ? 'rotate-180' : ''}`} />
                               </div>
                             </button>
-                            {/* Inline page buttons - always visible */}
+                            {/* Inline page buttons with anchor support */}
                             {codeInfo.pages?.length > 0 && (
                               <div className="px-3 py-1.5 border-t bg-gray-50/50 flex flex-wrap gap-1">
-                                {codeInfo.pages?.slice(0, expandedCode === codeInfo.code ? undefined : 10).map(pageNum => (
-                                  <button
-                                    key={pageNum}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setSelectedPage(pageNum);
-                                      setActiveTab('content');
-                                    }}
-                                    className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                                      selectedPage === pageNum 
-                                        ? 'bg-blue-600 text-white' 
-                                        : 'bg-white border hover:bg-blue-50 hover:border-blue-300'
-                                    }`}
-                                  >
-                                    p.{pageNum}
-                                  </button>
-                                ))}
+                                {codeInfo.pages?.slice(0, expandedCode === codeInfo.code ? undefined : 10).map(pageNum => {
+                                  // Find anchor for this page
+                                  const anchor = codeInfo.anchors?.find(a => a.page === pageNum);
+                                  return (
+                                    <button
+                                      key={pageNum}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSelectedPage(pageNum);
+                                        // Set anchor text for highlighting in PDF
+                                        if (anchor?.text) {
+                                          setSearchText(anchor.text);
+                                        } else {
+                                          // Fallback: use context or code itself
+                                          setSearchText(codeInfo.contexts?.[0] || codeInfo.code);
+                                        }
+                                      }}
+                                      title={anchor?.text ? `📍 "${anchor.text}"` : 'Click to view page (no citation anchor)'}
+                                      className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                                        selectedPage === pageNum
+                                          ? 'bg-blue-600 text-white'
+                                          : anchor?.text
+                                            ? 'bg-yellow-50 border border-yellow-300 hover:bg-yellow-100'
+                                            : 'bg-white border hover:bg-blue-50 hover:border-blue-300'
+                                      }`}
+                                    >
+                                      p.{pageNum}
+                                      {anchor?.text && <span className="ml-1 text-yellow-600">•</span>}
+                                    </button>
+                                  );
+                                })}
                                 {!expandedCode !== codeInfo.code && codeInfo.pages?.length > 10 && (
                                   <span className="text-xs text-gray-400 px-1">+{codeInfo.pages.length - 10}</span>
                                 )}
                               </div>
                             )}
-                            {/* Expanded context */}
-                            {expandedCode === codeInfo.code && codeInfo.contexts?.length > 0 && (
-                              <div className="px-3 py-2 bg-gray-50 border-t">
-                                <p className="text-xs text-gray-500 italic">
-                                  {codeInfo.contexts[0]}
-                                </p>
+                            {/* Expanded: show anchors/citations */}
+                            {expandedCode === codeInfo.code && (
+                              <div className="px-3 py-2 bg-gray-50 border-t space-y-2">
+                                {codeInfo.contexts?.[0] && (
+                                  <p className="text-xs text-gray-500 italic">
+                                    {codeInfo.contexts[0]}
+                                  </p>
+                                )}
+                                {codeInfo.anchors?.length > 0 && (
+                                  <div className="space-y-1">
+                                    <p className="text-xs font-medium text-gray-600">Citations:</p>
+                                    {codeInfo.anchors.map((anchor, idx) => (
+                                      <button
+                                        key={idx}
+                                        onClick={() => {
+                                          setSelectedPage(anchor.page);
+                                          setSearchText(anchor.text);
+                                        }}
+                                        className="block w-full text-left text-xs px-2 py-1 rounded bg-yellow-50 border border-yellow-200 hover:bg-yellow-100 transition-colors"
+                                      >
+                                        <span className="text-gray-400">p.{anchor.page}:</span>{' '}
+                                        <span className="text-gray-700">"{anchor.text}"</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
@@ -803,41 +865,76 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                     <p className="text-center text-gray-400 py-8">No topics found</p>
                   ) : (
                     <div className="space-y-1">
-                      {allTopics.map((topic, i) => {
-                        // Find pages with this topic
-                        const topicPages = document.pages?.filter(p => p.topics?.includes(topic)).map(p => p.page) || [];
+                      {allTopics.map((topicInfo, i) => {
+                        // Handle both old format (string) and new format (object with name, pages, anchors)
+                        const topicName = typeof topicInfo === 'string' ? topicInfo : topicInfo.name;
+                        const topicPages = typeof topicInfo === 'string'
+                          ? document.pages?.filter(p => p.topics?.some(t => (typeof t === 'string' ? t : t.name) === topicName)).map(p => p.page) || []
+                          : topicInfo.pages || [];
+                        const topicAnchors = typeof topicInfo === 'string' ? [] : topicInfo.anchors || [];
+
                         return (
                           <div key={i} className="border rounded">
                             <button
-                              onClick={() => setExpandedTopic(expandedTopic === topic ? null : topic)}
+                              onClick={() => setExpandedTopic(expandedTopic === topicName ? null : topicName)}
                               className="w-full px-3 py-2 flex items-center justify-between hover:bg-gray-50 text-left"
                             >
-                              <span className="text-sm">{topic}</span>
+                              <span className="text-sm">{topicName}</span>
                               <div className="flex items-center gap-2">
                                 <span className="text-xs text-gray-400">{topicPages.length} pages</span>
-                                <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${expandedTopic === topic ? 'rotate-180' : ''}`} />
+                                {topicAnchors.length > 0 && <span className="text-yellow-500 text-xs">•</span>}
+                                <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${expandedTopic === topicName ? 'rotate-180' : ''}`} />
                               </div>
                             </button>
-                            {expandedTopic === topic && (
-                              <div className="px-3 py-2 bg-gray-50 border-t">
-                                <div className="flex flex-wrap gap-1">
-                                  {topicPages.map(pageNum => (
+                            {/* Page buttons */}
+                            {topicPages.length > 0 && (
+                              <div className="px-3 py-1.5 border-t bg-gray-50/50 flex flex-wrap gap-1">
+                                {topicPages.map(pageNum => {
+                                  const anchor = topicAnchors.find(a => a.page === pageNum);
+                                  return (
                                     <button
                                       key={pageNum}
                                       onClick={() => {
                                         setSelectedPage(pageNum);
-                                        setActiveTab('content');
+                                        if (anchor?.text) {
+                                          setSearchText(anchor.text);
+                                        } else {
+                                          setSearchText(topicName);
+                                        }
                                       }}
-                                      className={`px-2 py-1 text-xs rounded ${
-                                        selectedPage === pageNum 
-                                          ? 'bg-blue-600 text-white' 
-                                          : 'bg-white border hover:bg-blue-50'
+                                      title={anchor?.text ? `📍 "${anchor.text}"` : `Search for "${topicName}"`}
+                                      className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                                        selectedPage === pageNum
+                                          ? 'bg-blue-600 text-white'
+                                          : anchor?.text
+                                            ? 'bg-yellow-50 border border-yellow-300 hover:bg-yellow-100'
+                                            : 'bg-white border hover:bg-blue-50'
                                       }`}
                                     >
                                       p.{pageNum}
+                                      {anchor?.text && <span className="ml-1 text-yellow-600">•</span>}
                                     </button>
-                                  ))}
-                                </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {/* Expanded: show citations */}
+                            {expandedTopic === topicName && topicAnchors.length > 0 && (
+                              <div className="px-3 py-2 bg-blue-50 border-t space-y-1">
+                                <p className="text-xs font-medium text-blue-600">Citations:</p>
+                                {topicAnchors.map((anchor, idx) => (
+                                  <button
+                                    key={idx}
+                                    onClick={() => {
+                                      setSelectedPage(anchor.page);
+                                      setSearchText(anchor.text);
+                                    }}
+                                    className="block w-full text-left text-xs px-2 py-1 rounded bg-white border border-blue-200 hover:bg-blue-100 transition-colors"
+                                  >
+                                    <span className="text-gray-400">p.{anchor.page}:</span>{' '}
+                                    <span className="text-gray-700">"{anchor.text}"</span>
+                                  </button>
+                                ))}
                               </div>
                             )}
                           </div>
@@ -855,41 +952,76 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                     <p className="text-center text-gray-400 py-8">No medications found</p>
                   ) : (
                     <div className="space-y-1">
-                      {allMedications.map((med, i) => {
-                        // Find pages with this medication
-                        const medPages = document.pages?.filter(p => p.medications?.includes(med)).map(p => p.page) || [];
+                      {allMedications.map((medInfo, i) => {
+                        // Handle both old format (string) and new format (object with name, pages, anchors)
+                        const medName = typeof medInfo === 'string' ? medInfo : medInfo.name;
+                        const medPages = typeof medInfo === 'string'
+                          ? document.pages?.filter(p => p.medications?.some(m => (typeof m === 'string' ? m : m.name) === medName)).map(p => p.page) || []
+                          : medInfo.pages || [];
+                        const medAnchors = typeof medInfo === 'string' ? [] : medInfo.anchors || [];
+
                         return (
                           <div key={i} className="border rounded">
                             <button
-                              onClick={() => setExpandedMed(expandedMed === med ? null : med)}
+                              onClick={() => setExpandedMed(expandedMed === medName ? null : medName)}
                               className="w-full px-3 py-2 flex items-center justify-between hover:bg-gray-50 text-left"
                             >
-                              <span className="text-sm font-medium text-emerald-700">{med}</span>
+                              <span className="text-sm font-medium text-emerald-700">{medName}</span>
                               <div className="flex items-center gap-2">
                                 <span className="text-xs text-gray-400">{medPages.length} pages</span>
-                                <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${expandedMed === med ? 'rotate-180' : ''}`} />
+                                {medAnchors.length > 0 && <span className="text-yellow-500 text-xs">•</span>}
+                                <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${expandedMed === medName ? 'rotate-180' : ''}`} />
                               </div>
                             </button>
-                            {expandedMed === med && (
-                              <div className="px-3 py-2 bg-gray-50 border-t">
-                                <div className="flex flex-wrap gap-1">
-                                  {medPages.map(pageNum => (
+                            {/* Page buttons */}
+                            {medPages.length > 0 && (
+                              <div className="px-3 py-1.5 border-t bg-gray-50/50 flex flex-wrap gap-1">
+                                {medPages.map(pageNum => {
+                                  const anchor = medAnchors.find(a => a.page === pageNum);
+                                  return (
                                     <button
                                       key={pageNum}
                                       onClick={() => {
                                         setSelectedPage(pageNum);
-                                        setActiveTab('content');
+                                        if (anchor?.text) {
+                                          setSearchText(anchor.text);
+                                        } else {
+                                          setSearchText(medName);
+                                        }
                                       }}
-                                      className={`px-2 py-1 text-xs rounded ${
-                                        selectedPage === pageNum 
-                                          ? 'bg-blue-600 text-white' 
-                                          : 'bg-white border hover:bg-blue-50'
+                                      title={anchor?.text ? `📍 "${anchor.text}"` : `Search for "${medName}"`}
+                                      className={`px-2 py-0.5 text-xs rounded transition-colors ${
+                                        selectedPage === pageNum
+                                          ? 'bg-blue-600 text-white'
+                                          : anchor?.text
+                                            ? 'bg-yellow-50 border border-yellow-300 hover:bg-yellow-100'
+                                            : 'bg-white border hover:bg-blue-50'
                                       }`}
                                     >
                                       p.{pageNum}
+                                      {anchor?.text && <span className="ml-1 text-yellow-600">•</span>}
                                     </button>
-                                  ))}
-                                </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {/* Expanded: show citations */}
+                            {expandedMed === medName && medAnchors.length > 0 && (
+                              <div className="px-3 py-2 bg-emerald-50 border-t space-y-1">
+                                <p className="text-xs font-medium text-emerald-600">Citations:</p>
+                                {medAnchors.map((anchor, idx) => (
+                                  <button
+                                    key={idx}
+                                    onClick={() => {
+                                      setSelectedPage(anchor.page);
+                                      setSearchText(anchor.text);
+                                    }}
+                                    className="block w-full text-left text-xs px-2 py-1 rounded bg-white border border-emerald-200 hover:bg-emerald-100 transition-colors"
+                                  >
+                                    <span className="text-gray-400">p.{anchor.page}:</span>{' '}
+                                    <span className="text-gray-700">"{anchor.text}"</span>
+                                  </button>
+                                ))}
                               </div>
                             )}
                           </div>

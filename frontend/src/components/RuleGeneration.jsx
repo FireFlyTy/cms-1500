@@ -9,7 +9,7 @@ import PdfViewer from './PdfViewer';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-const API_BASE = 'http://localhost:8000/api/rules';
+const API_BASE = 'http://localhost:8001/api/rules';
 
 // =============================================================================
 // HOOKS
@@ -747,7 +747,7 @@ const RuleViewer = ({ code, onClose }) => {
 
   const sourceDocuments = log?.source_documents || [];
   const currentDoc = docMap[currentDocId];
-  const pdfUrl = currentDocId ? `http://localhost:8000/api/kb/documents/${currentDocId}/pdf` : null;
+  const pdfUrl = currentDocId ? `http://localhost:8001/api/kb/documents/${currentDocId}/pdf` : null;
 
   // Handle citation click - jump to document and page with highlighting
   const handleCitationClick = (docId, page, anchor) => {

@@ -13,7 +13,7 @@ const CodeSelector = ({ selectedCode, onSelect }) => {
     const fetchCodes = async () => {
       setLoading(true);
       try {
-        const res = await fetch('http://127.0.0.1:8000/api/codes');
+        const res = await fetch('http://127.0.0.1:8001/api/codes');
         if (res.ok) {
           const data = await res.json();
           setCodes(data);

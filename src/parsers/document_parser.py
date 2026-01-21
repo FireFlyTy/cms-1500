@@ -28,6 +28,19 @@ class CodeInfo:
     code: str
     type: str  # ICD-10, HCPCS, CPT, NDC
     context: Optional[str] = None
+    anchor: Optional[str] = None  # Exact text from document that led to this code
+
+
+@dataclass
+class TopicInfo:
+    name: str
+    anchor: Optional[str] = None  # Exact text from document for this topic
+
+
+@dataclass
+class MedicationInfo:
+    name: str
+    anchor: Optional[str] = None  # Exact text from document for this medication
 
 
 @dataclass
@@ -36,10 +49,10 @@ class PageData:
     page_type: str  # clinical, administrative, reference, toc, empty
     content: Optional[str] = None
     codes: List[CodeInfo] = None
-    topics: List[str] = None
-    medications: List[str] = None
+    topics: List[TopicInfo] = None
+    medications: List[MedicationInfo] = None
     skip_reason: Optional[str] = None
-    
+
     def __post_init__(self):
         if self.codes is None:
             self.codes = []
@@ -65,18 +78,18 @@ class DocumentData:
     def _build_summary(self) -> Dict:
         """Собирает summary из всех страниц"""
         all_codes = {}
-        all_topics = set()
-        all_medications = set()
+        all_topics = {}
+        all_medications = {}
         content_pages = []
         skipped_pages = []
-        
+
         for page in self.pages:
             if page.content:
                 content_pages.append(page.page)
             else:
                 skipped_pages.append(page.page)
-            
-            # Aggregate codes with pages
+
+            # Aggregate codes with pages and anchors
             for code_info in page.codes:
                 key = code_info.code
                 if key not in all_codes:
@@ -84,16 +97,68 @@ class DocumentData:
                         'code': code_info.code,
                         'type': code_info.type,
                         'pages': [],
-                        'contexts': []
+                        'contexts': [],
+                        'anchors': []  # List of {page, text} for citation highlighting
                     }
                 if page.page not in all_codes[key]['pages']:
                     all_codes[key]['pages'].append(page.page)
                 if code_info.context:
                     all_codes[key]['contexts'].append(code_info.context)
-            
-            all_topics.update(page.topics)
-            all_medications.update(page.medications)
-        
+                # Add anchor with page info for citation
+                if code_info.anchor:
+                    all_codes[key]['anchors'].append({
+                        'page': page.page,
+                        'text': code_info.anchor
+                    })
+
+            # Aggregate topics with pages and anchors
+            for topic_info in page.topics:
+                # Handle both old format (string) and new format (TopicInfo)
+                if isinstance(topic_info, str):
+                    name = topic_info
+                    anchor = None
+                else:
+                    name = topic_info.name
+                    anchor = topic_info.anchor
+
+                if name not in all_topics:
+                    all_topics[name] = {
+                        'name': name,
+                        'pages': [],
+                        'anchors': []
+                    }
+                if page.page not in all_topics[name]['pages']:
+                    all_topics[name]['pages'].append(page.page)
+                if anchor:
+                    all_topics[name]['anchors'].append({
+                        'page': page.page,
+                        'text': anchor
+                    })
+
+            # Aggregate medications with pages and anchors
+            for med_info in page.medications:
+                # Handle both old format (string) and new format (MedicationInfo)
+                if isinstance(med_info, str):
+                    name = med_info
+                    anchor = None
+                else:
+                    name = med_info.name
+                    anchor = med_info.anchor
+
+                if name not in all_medications:
+                    all_medications[name] = {
+                        'name': name,
+                        'pages': [],
+                        'anchors': []
+                    }
+                if page.page not in all_medications[name]['pages']:
+                    all_medications[name]['pages'].append(page.page)
+                if anchor:
+                    all_medications[name]['anchors'].append({
+                        'page': page.page,
+                        'text': anchor
+                    })
+
         # Determine doc_type based on page_types
         page_types = [p.page_type for p in self.pages if p.content]
         if 'clinical' in page_types:
@@ -102,12 +167,12 @@ class DocumentData:
             doc_type = 'pa_policy'
         else:
             doc_type = 'unknown'
-        
+
         return {
             'doc_type': doc_type,
             'all_codes': list(all_codes.values()),
-            'topics': sorted(all_topics),
-            'medications': sorted(all_medications),
+            'topics': sorted(all_topics.values(), key=lambda x: x['name']),
+            'medications': sorted(all_medications.values(), key=lambda x: x['name']),
             'content_pages': content_pages,
             'skipped_pages': skipped_pages,
             'content_page_count': len(content_pages)
@@ -126,8 +191,8 @@ class DocumentData:
                     'page_type': p.page_type,
                     'content': p.content,
                     'codes': [asdict(c) for c in p.codes],
-                    'topics': p.topics,
-                    'medications': p.medications,
+                    'topics': [asdict(t) if hasattr(t, 'name') else {'name': t, 'anchor': None} for t in p.topics],
+                    'medications': [asdict(m) if hasattr(m, 'name') else {'name': m, 'anchor': None} for m in p.medications],
                     'skip_reason': p.skip_reason
                 }
                 for p in self.pages
@@ -301,21 +366,58 @@ def code_matches_pattern(code: str, pattern: str) -> bool:
 
 def parse_code_string(code_str: str) -> List[CodeInfo]:
     """
-    Парсит строку кодов: "E11.9 (ICD-10), J1950 (HCPCS), 99213 (CPT)"
+    Парсит строку кодов с anchor текстом:
+
+    Formats supported:
+    - E11.9 (ICD-10)                           → code only
+    - E11.9 (ICD-10: Type 2 Diabetes)          → code + context
+    - E11.9 (ICD-10: "type 2 diabetes")        → code + anchor (quoted = exact text)
+    - E11.9 (ICD-10: Type 2 Diabetes | "type 2 diabetes")  → context + anchor
+
     Нормализует wildcard паттерны (*, -, x → %)
     """
     codes = []
     if not code_str or code_str.strip() == '-':
         return codes
 
-    # Pattern: CODE (TYPE) или CODE (TYPE: context)
+    # Pattern: CODE (TYPE) or CODE (TYPE: context) or CODE (TYPE: context | "anchor")
+    # Also handles CODE (TYPE: "anchor") where anchor is in quotes
     pattern = r'([A-Z0-9\.\-\*]+)\s*\(([^:)]+)(?::\s*([^)]+))?\)'
     matches = re.findall(pattern, code_str, re.IGNORECASE)
 
     for match in matches:
         code = match[0].strip()
         code_type = match[1].strip().upper()
-        context = match[2].strip() if len(match) > 2 and match[2] else None
+        extra = match[2].strip() if len(match) > 2 and match[2] else None
+
+        context = None
+        anchor = None
+
+        if extra:
+            # Check if there's a pipe separator: "Context | "anchor text""
+            if '|' in extra:
+                parts = extra.split('|', 1)
+                context = parts[0].strip()
+                anchor_part = parts[1].strip()
+                # Extract quoted anchor
+                anchor_match = re.search(r'"([^"]+)"', anchor_part)
+                if anchor_match:
+                    anchor = anchor_match.group(1)
+            # Check if the whole thing is quoted (just anchor, no context)
+            elif extra.startswith('"') and extra.endswith('"'):
+                anchor = extra[1:-1]
+            # Check if there's a quoted part at the end
+            elif '"' in extra:
+                anchor_match = re.search(r'"([^"]+)"', extra)
+                if anchor_match:
+                    anchor = anchor_match.group(1)
+                    # Context is everything before the quote
+                    context = extra[:extra.index('"')].strip().rstrip(',').strip()
+                    if not context:
+                        context = None
+            else:
+                # No quotes - treat as context only
+                context = extra
 
         # Normalize wildcard patterns
         code = normalize_code_pattern(code)
@@ -330,7 +432,7 @@ def parse_code_string(code_str: str) -> List[CodeInfo]:
         elif code_type in ['NDC']:
             code_type = 'NDC'
 
-        codes.append(CodeInfo(code=code, type=code_type, context=context))
+        codes.append(CodeInfo(code=code, type=code_type, context=context, anchor=anchor))
 
     # Fallback: если pattern не сработал, пробуем простой split
     if not codes and code_str:
@@ -342,8 +444,8 @@ def parse_code_string(code_str: str) -> List[CodeInfo]:
             # Normalize and detect type
             part = normalize_code_pattern(part)
             code_type = detect_code_type(part)
-            codes.append(CodeInfo(code=part, type=code_type, context=None))
-    
+            codes.append(CodeInfo(code=part, type=code_type, context=None, anchor=None))
+
     return codes
 
 
@@ -374,9 +476,74 @@ def parse_list_string(list_str: str) -> List[str]:
     """Парсит строку списка: "item1, item2, item3" """
     if not list_str or list_str.strip() == '-':
         return []
-    
+
     items = [item.strip() for item in list_str.split(',')]
     return [item for item in items if item]
+
+
+def parse_topics_string(topics_str: str) -> List[TopicInfo]:
+    """
+    Парсит строку тем с anchor текстом:
+
+    Formats supported:
+    - "topic name" ("anchor text")     → topic + anchor
+    - topic name                        → topic only (backward compat)
+
+    Example: "GLP-1 indications" ("indicated for treatment"), "metformin failure" ("inadequate response")
+    """
+    topics = []
+    if not topics_str or topics_str.strip() == '-':
+        return topics
+
+    # Pattern: "topic name" ("anchor text") or just topic name
+    # Match: "name" ("anchor") pattern
+    pattern = r'"([^"]+)"\s*\("([^"]+)"\)'
+    matches = re.findall(pattern, topics_str)
+
+    if matches:
+        for name, anchor in matches:
+            topics.append(TopicInfo(name=name.strip(), anchor=anchor.strip()))
+    else:
+        # Fallback: simple comma-separated list (backward compatibility)
+        parts = topics_str.split(',')
+        for part in parts:
+            part = part.strip().strip('"')
+            if part:
+                topics.append(TopicInfo(name=part, anchor=None))
+
+    return topics
+
+
+def parse_medications_string(meds_str: str) -> List[MedicationInfo]:
+    """
+    Парсит строку медикаментов с anchor текстом:
+
+    Formats supported:
+    - "drug name" ("anchor text")       → drug + anchor
+    - drug name                          → drug only (backward compat)
+
+    Example: "semaglutide" ("Semaglutide (Ozempic): J1950"), "dulaglutide" ("Trulicity")
+    """
+    meds = []
+    if not meds_str or meds_str.strip() == '-':
+        return meds
+
+    # Pattern: "drug name" ("anchor text") or just drug name
+    pattern = r'"([^"]+)"\s*\("([^"]+)"\)'
+    matches = re.findall(pattern, meds_str)
+
+    if matches:
+        for name, anchor in matches:
+            meds.append(MedicationInfo(name=name.strip(), anchor=anchor.strip()))
+    else:
+        # Fallback: simple comma-separated list (backward compatibility)
+        parts = meds_str.split(',')
+        for part in parts:
+            part = part.strip().strip('"')
+            if part:
+                meds.append(MedicationInfo(name=part, anchor=None))
+
+    return meds
 
 
 def parse_page_block(block: str, page_num: int) -> PageData:
@@ -405,15 +572,15 @@ def parse_page_block(block: str, page_num: int) -> PageData:
     if match:
         page.codes = parse_code_string(match.group(1))
     
-    # Extract TOPICS
+    # Extract TOPICS (with anchor support)
     match = re.search(r'\[TOPICS:\s*([^\]]+)\]', block, re.IGNORECASE)
     if match:
-        page.topics = parse_list_string(match.group(1))
-    
-    # Extract MEDICATIONS
+        page.topics = parse_topics_string(match.group(1))
+
+    # Extract MEDICATIONS (with anchor support)
     match = re.search(r'\[MEDICATIONS:\s*([^\]]+)\]', block, re.IGNORECASE)
     if match:
-        page.medications = parse_list_string(match.group(1))
+        page.medications = parse_medications_string(match.group(1))
     
     # Extract SKIP reason
     match = re.search(r'\[SKIP:\s*([^\]]+)\]', block, re.IGNORECASE)
@@ -574,8 +741,9 @@ For pages to skip, use:
 
 === CODE EXTRACTION RULES ===
 
-Extract medical codes in this EXACT format:
-[CODES: CODE (TYPE), CODE (TYPE), ...]
+Extract medical codes with ANCHOR TEXT (exact quote from document).
+
+Format: [CODES: CODE (TYPE: "anchor text"), CODE (TYPE: "anchor text"), ...]
 
 TYPE must be ONE of these 4 values ONLY:
 - ICD-10 (diagnosis codes starting with letter: E11.9, Z79.4, F32.1)
@@ -583,28 +751,61 @@ TYPE must be ONE of these 4 values ONLY:
 - CPT (5 digits: 99213, 96372, 47533)
 - NDC (drug codes: 0002-1433-80)
 
+ANCHOR TEXT rules:
+- Put the EXACT phrase from the document in quotes
+- This is the text that mentions or implies the code
+- Used for citation highlighting in PDF viewer
+- Keep it short (3-15 words), enough to find in document
+
 CORRECT examples:
-[CODES: E11.9 (ICD-10), J1950 (HCPCS), 99213 (CPT)]
-[CODES: Z79.4 (ICD-10), A4253 (HCPCS)]
+[CODES: E11.9 (ICD-10: "diagnosis of type 2 diabetes"), J1950 (HCPCS: "semaglutide injection")]
+[CODES: Z79.4 (ICD-10: "long-term insulin use"), 99213 (CPT: "established patient visit")]
+
+For INFERRED codes (condition mentioned but code not written):
+[CODES: E11.9 (ICD-10: "type 2 diabetes mellitus")]
+[CODES: E78.2 (ICD-10: "atherosclerotic cardiovascular disease")]
+
+For LITERAL codes (code appears in document text):
+[CODES: J1950 (HCPCS: "J1950")]
+[CODES: 99213 (CPT: "99213-99215")]
 
 WRONG - do not put descriptions in TYPE:
-[CODES: 99213 (Office visit)] ← WRONG, should be (CPT)
-[CODES: J1950 (semaglutide injection)] ← WRONG, should be (HCPCS)
-[CODES: 47533 (BILIARY TRACT)] ← WRONG, should be (CPT)
+[CODES: 99213 (Office visit)] ← WRONG, should be (CPT: "anchor")
+[CODES: J1950 (semaglutide injection)] ← WRONG, should be (HCPCS: "anchor")
 
 If no codes on page: [CODES: -]
 
 === TOPICS ===
 
-Extract 2-5 key topics/themes from the page content.
-Examples: GLP-1 indications, metformin failure, HbA1c targets, contraindications, dosing
+Extract 2-5 key topics/themes with ANCHOR TEXT (exact quote from document).
+
+Format: [TOPICS: "topic name" ("anchor text"), "topic name" ("anchor text"), ...]
+
+ANCHOR TEXT rules:
+- Put the EXACT phrase from the document in parentheses with quotes
+- This is the text that discusses this topic
+- Keep anchors short (5-20 words), enough to find in document
+
+Examples:
+[TOPICS: "GLP-1 indications" ("indicated for the treatment of type 2 diabetes"), "metformin failure" ("inadequate response or intolerance to metformin")]
+[TOPICS: "contraindications" ("contraindicated in individuals with"), "dosing" ("1 mg/dose (4 mg prefilled pen)")]
 
 If no clear topics: [TOPICS: -]
 
 === MEDICATIONS ===
 
-Extract drug names (generic and brand) mentioned on the page.
-Examples: semaglutide, Ozempic, dulaglutide, Trulicity, metformin
+Extract drug names (generic and brand) with ANCHOR TEXT (exact quote from document).
+
+Format: [MEDICATIONS: "drug name" ("anchor text"), "drug name" ("anchor text"), ...]
+
+ANCHOR TEXT rules:
+- Put the EXACT phrase from the document in parentheses with quotes
+- Include the context where medication is mentioned
+- Keep anchors short (5-20 words)
+
+Examples:
+[MEDICATIONS: "semaglutide" ("Semaglutide (Ozempic): J1950"), "dulaglutide" ("Dulaglutide (Trulicity): J3490")]
+[MEDICATIONS: "metformin" ("trial and inadequate response or intolerance to metformin")]
 
 If no medications: [MEDICATIONS: -]
 
@@ -638,9 +839,9 @@ Drug: Semaglutide, Brand: Ozempic, Code: J1950
 
 [PAGE_START]
 [PAGE_TYPE: clinical]
-[CODES: E11.9 (ICD-10), J1950 (HCPCS), J3490 (HCPCS)]
-[TOPICS: GLP-1 indications, metformin failure, HbA1c targets]
-[MEDICATIONS: semaglutide, dulaglutide, liraglutide]
+[CODES: E11.9 (ICD-10: "type 2 diabetes mellitus"), J1950 (HCPCS: "Semaglutide (Ozempic): J1950"), J3490 (HCPCS: "Dulaglutide (Trulicity): J3490")]
+[TOPICS: "GLP-1 indications" ("indicated for the treatment of type 2 diabetes mellitus"), "metformin failure" ("Metformin is contraindicated or not tolerated"), "HbA1c targets" ("HbA1c remains above target")]
+[MEDICATIONS: "semaglutide" ("Semaglutide (Ozempic): J1950"), "dulaglutide" ("Dulaglutide (Trulicity): J3490"), "liraglutide" ("Liraglutide (Victoza): J3490")]
 
 Glucagon-Like Peptide-1 (GLP-1) Receptor Agonists
 

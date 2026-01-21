@@ -8,7 +8,7 @@ import re
 import json
 import hashlib
 import asyncio
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks
@@ -150,8 +150,8 @@ class DocumentResponse(BaseModel):
     categories: List[str] = []
     codes: List[Dict] = []
     stages: List[str] = []
-    topics: List[str] = []
-    medications: List[str] = []
+    topics: List[Any] = []  # Can be str (old) or dict with {name, pages, anchors} (new)
+    medications: List[Any] = []  # Can be str (old) or dict with {name, pages, anchors} (new)
 
 
 class CodeIndexItem(BaseModel):
@@ -841,6 +841,88 @@ async def parse_all_documents():
     return {
         "total": len(unparsed),
         "parsed": len([r for r in results if r['status'] == 'success']),
+        "errors": len([r for r in results if r['status'] == 'error']),
+        "results": results
+    }
+
+
+@router.post("/documents/reparse-all")
+async def reparse_all_documents():
+    """Re-parse ALL documents to update with new anchor/citation format"""
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT file_hash, filename, source_path FROM documents
+    """)
+    all_docs = cursor.fetchall()
+    conn.close()
+
+    results = []
+    for row in all_docs:
+        file_hash, filename, source_path = row[0], row[1], row[2]
+
+        try:
+            # Find PDF file
+            pdf_path = source_path
+            if not os.path.exists(pdf_path):
+                pdf_path = os.path.join(UPLOAD_DIR, source_path)
+
+            if not os.path.exists(pdf_path):
+                results.append({
+                    "file_hash": file_hash,
+                    "filename": filename,
+                    "status": "error",
+                    "error": "PDF not found"
+                })
+                continue
+
+            # Read file
+            with open(pdf_path, 'rb') as f:
+                content = f.read()
+
+            # Re-parse with updated prompt (anchors)
+            doc = await parse_pdf_with_metadata(content, filename, file_hash)
+
+            # Update DB
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE documents
+                SET parsed_at = ?, content_path = ?, total_pages = ?
+                WHERE file_hash = ?
+            """, (
+                doc.parsed_at,
+                os.path.join(DOCUMENTS_DIR, file_hash, 'content.json'),
+                doc.total_pages,
+                file_hash
+            ))
+            conn.commit()
+            conn.close()
+
+            # Save codes (with anchors)
+            save_document_to_db(doc, source_path)
+
+            results.append({
+                "file_hash": file_hash,
+                "filename": filename,
+                "status": "success",
+                "content_pages": doc.summary['content_page_count'],
+                "codes_found": len(doc.summary['all_codes']),
+                "anchors_found": sum(len(c.get('anchors', [])) for c in doc.summary['all_codes'])
+            })
+
+        except Exception as e:
+            results.append({
+                "file_hash": file_hash,
+                "filename": filename,
+                "status": "error",
+                "error": str(e)
+            })
+
+    return {
+        "total": len(all_docs),
+        "reparsed": len([r for r in results if r['status'] == 'success']),
         "errors": len([r for r in results if r['status'] == 'error']),
         "results": results
     }
