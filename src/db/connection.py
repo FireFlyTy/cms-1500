@@ -7,7 +7,12 @@ import sqlite3
 from pathlib import Path
 
 
-DATABASE_PATH = os.getenv("DATABASE_PATH", "data/processed/reference.db")
+# Get project root (this file is in src/db/, so go up 2 levels)
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+# Default database path relative to project root
+_default_db_path = PROJECT_ROOT / "data" / "processed" / "reference.db"
+DATABASE_PATH = os.getenv("DATABASE_PATH", str(_default_db_path))
 
 
 def get_db_connection() -> sqlite3.Connection:

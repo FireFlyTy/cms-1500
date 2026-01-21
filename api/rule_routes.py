@@ -130,8 +130,10 @@ def code_matches_pattern(code: str, pattern: str) -> bool:
         if len(parts) == 2:
             start, end = parts
             try:
+                # Pure numeric codes (CPT)
                 if code.isdigit() and start.isdigit() and end.isdigit():
                     return int(start) <= int(code) <= int(end)
+
                 # Alphanumeric - extract common prefix
                 common = ""
                 for c1, c2, c3 in zip(code, start, end):
@@ -139,6 +141,8 @@ def code_matches_pattern(code: str, pattern: str) -> bool:
                         common += c1
                     else:
                         break
+
+                # Must have same prefix to match (e.g., E11.0:E11.9 only matches E11.x)
                 if common:
                     c_suf = code[len(common):]
                     s_suf = start[len(common):]
@@ -148,9 +152,17 @@ def code_matches_pattern(code: str, pattern: str) -> bool:
                         s_num = float(s_suf) if '.' in s_suf else int(s_suf)
                         e_num = float(e_suf) if '.' in e_suf else int(e_suf)
                         return s_num <= c_num <= e_num
+
+                # No common prefix - check if codes have same structure
+                # (same first character type: letter vs digit)
+                if code[0].isalpha() != start[0].isalpha():
+                    return False  # Different code types (ICD vs CPT)
+                if code[0].isalpha() != end[0].isalpha():
+                    return False
+
                 return start <= code <= end
             except:
-                return start <= code <= end
+                return False  # Don't match on errors
 
     # Wildcard match
     if '%' in pattern:
@@ -196,7 +208,7 @@ def get_all_codes_from_db() -> List[Dict]:
 
     # Get all code patterns from DB
     cursor.execute("""
-        SELECT 
+        SELECT
             dc.code_pattern as code,
             dc.code_type,
             dc.document_id,

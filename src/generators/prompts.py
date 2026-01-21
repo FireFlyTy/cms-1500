@@ -68,6 +68,31 @@ $description
 
 OBJECTIVE:
 Analyze ALL provided source documents to create validation rules for the code.
+
+=== SOURCE UTILIZATION REQUIREMENT ===
+You are provided with MULTIPLE source documents. You MUST:
+1. Extract at least ONE citation from EVERY source document provided
+2. MAXIMIZE CONTENT COVERAGE:
+   - Cite from different pages within each document
+   - Cite from different locations/sections within the same page
+   - Do NOT repeat the same quote multiple times - find NEW supporting text for each statement
+3. If a source document has NO relevant information for this code, you MUST document this in SOURCE EXTRACTION LOG
+
+If a source appears irrelevant, still search it thoroughly - guidelines may mention the code indirectly (e.g., in Excludes notes, Code First instructions, or as a related condition).
+
+=== MANDATORY SOURCE DISTRIBUTION ===
+Every source document MUST contribute at least one citation to EITHER:
+- Section 2 (CRITERIA) - inclusion/exclusion rules, sequencing
+- Section 3 (INSTRUCTIONS) - validation logic steps
+
+⚠️ SUMMARY section citations do NOT satisfy this requirement.
+If a source only appears in SUMMARY but not in CRITERIA or INSTRUCTIONS → it is NOT properly utilized.
+
+**Validation Rule:**
+Before completing your draft, verify:
+- Each [doc_id] appears at least once in Section 2 OR Section 3
+- If a source cannot contribute to CRITERIA/INSTRUCTIONS, document WHY in SOURCE EXTRACTION LOG
+
 CRITICAL: You must extract text VERBATIM. Do not correct typos, do not fix spacing.
 
 CITATION PROTOCOL:
@@ -133,11 +158,26 @@ You are strictly forbidden from correcting the source text.
 ## 5. SOURCE EXTRACTION LOG (Fact Check)
 Do not evaluate your work. Just list findings.
 1. **Documents Analyzed**: <List all doc_ids and filenames>
-2. **Excludes Notes Found**: <List verbatim citations with [doc_id] Page numbers or "None">
-3. **Code First Notes Found**: <List verbatim citations with [doc_id] Page numbers or "None">
-4. **Total Citations Created**: <Count>
-5. **Cross-Document References**: <Any information confirmed in multiple sources, or "None">
-6. **Page Number Verification**: Confirm all page numbers are from "## Page N" markers
+2. **Citations Per Document**:
+   - [doc_id_1]: <count> citations
+     * Page X: <count> citations (locations: <brief description - e.g., "Excludes note", "Code First section", "Definition paragraph">)
+     * Page Y: <count> citations (locations: ...)
+   - [doc_id_2]: ...
+3. **Citations in CRITERIA/INSTRUCTIONS Per Document** (MANDATORY CHECK):
+   - [doc_id_1]: CRITERIA: <count>, INSTRUCTIONS: <count>
+   - [doc_id_2]: CRITERIA: <count>, INSTRUCTIONS: <count>
+   - ⚠️ If any doc_id has 0 in BOTH columns → MUST justify in UNUSED SOURCES or add citations
+4. **UNUSED SOURCES** (REQUIRED if any source has 0 citations in CRITERIA+INSTRUCTIONS):
+   - [doc_id]: NOT USED because: <specific reason - e.g., "No mention of code or related conditions", "Only contains administrative information", "Code not in scope of this document's specialty">
+5. **Citation Variance Check**:
+   - Multiple pages per document? [YES/NO]
+   - Multiple locations per page? [YES/NO]
+   - Any repeated quotes? [YES/NO - if YES, justify why no alternative text exists]
+6. **Excludes Notes Found**: <List verbatim citations with [doc_id] Page numbers or "None">
+7. **Code First Notes Found**: <List verbatim citations with [doc_id] Page numbers or "None">
+8. **Total Unique Citations Created**: <Count>
+9. **Cross-Document References**: <Any information confirmed in multiple sources, or "None">
+10. **Page Number Verification**: Confirm all page numbers are from "## Page N" markers
 
 !!! STOP INSTRUCTION !!!
 DO NOT provide a verdict. This is a DRAFT.
@@ -354,7 +394,7 @@ FOCUS AREAS:
    - If found: FOLLOW the reference (may be in same or different source document), READ the target section, check if important rules are MISSING
    - If a cross-reference points to rules not covered → propose FIX RISK
    - **CRITICAL:** Always cite from the ACTUAL target section with [doc_id], not from the cross-reference text
-5. **Citations:** 
+5. **Citations:**
    - **ONLY** process citations that appear in AUTOMATED CITATION CHECK above
    - If AUTOMATED CITATION CHECK is empty or says "No errors" → DO NOT propose any FIX_PAGE or FIX_DOC
    - For errors listed in AUTOMATED CITATION CHECK:
@@ -363,6 +403,15 @@ FOCUS AREAS:
      * [PAGE_OVERFLOW] → Create [FIX_OVERFLOW] to split citation or cite page range
      * [AMBIGUOUS] → Create [FIX_AMBIGUOUS]: verify which [doc_id] Page's CONTEXT matches the statement being supported
      * [NOT_FOUND] → Flag as hallucination risk, recommend removal
+6. **Source Coverage Verification:**
+   - Check: Did the DRAFT cite from ALL provided source documents?
+   - If any source has ZERO citations:
+     * Verify the UNUSED SOURCES justification in DRAFT's SOURCE EXTRACTION LOG
+     * Search that document yourself for ANY relevant content (mentions of the code, related codes, exclusion notes)
+     * If you find relevant content → propose ADD_SOURCE correction
+   - Check: Did DRAFT cite from multiple locations within each page (not repeating same quote)?
+   - Flag sources where DRAFT cited only 1 page but document has relevant content on multiple pages
+   - Flag pages where DRAFT cited only 1 location but page has relevant content in multiple sections
 
 OUTPUT SECTIONS (MARKDOWN):
 
@@ -383,18 +432,50 @@ Review ONLY the pages cited in DRAFT (Section 4: REFERENCE). For any cross-refer
 
 If no cross-references found on cited pages, write: "No cross-references on cited pages."
 
-## 3. PAGE NUMBER AUDIT (INFORMATIONAL ONLY)
+## 3. SOURCE UTILIZATION AUDIT
+For each source document provided:
+- **[doc_id]** (<filename>):
+  * Total citations in DRAFT: <count>
+  * Citations in CRITERIA section: <count>
+  * Citations in INSTRUCTIONS section: <count>
+  * Pages cited: <list>
+  * Locations per page: <e.g., "Page 45: 2 citations from same paragraph" - FLAG if low variance>
+  * Relevant content found but NOT cited: <YES/NO - list specific locations if YES>
+  * Repeated quotes: <YES/NO - flag if same anchor used multiple times>
+
+**CRITICAL CHECK - Source in CRITERIA/INSTRUCTIONS:**
+| Doc ID | In CRITERIA? | In INSTRUCTIONS? | Status |
+|--------|--------------|------------------|--------|
+| [doc_id_1] | YES/NO (<count>) | YES/NO (<count>) | OK / ⚠️ GAP |
+| [doc_id_2] | YES/NO (<count>) | YES/NO (<count>) | OK / ⚠️ GAP |
+
+⚠️ GAP = Source has NO citations in CRITERIA and NO citations in INSTRUCTIONS (only in SUMMARY or nowhere)
+
+**ISSUES FOUND** (check all that apply):
+- [ ] Source not cited at all
+- [ ] Source ONLY in SUMMARY (not in CRITERIA/INSTRUCTIONS) ← CRITICAL GAP
+- [ ] Only one page cited when multiple pages have relevant content
+- [ ] Same location cited repeatedly (low variance within page)
+- [ ] Relevant content on page X not utilized
+
+**VERDICT**: [MAXIMUM COVERAGE / GAPS FOUND - see ADD_SOURCE corrections in Section 6]
+
+## 4. PAGE NUMBER AUDIT (INFORMATIONAL ONLY)
 - This section is for your notes only — DO NOT use it to propose FIX_PAGE
 - FIX_PAGE can ONLY be proposed for citations listed in AUTOMATED CITATION CHECK
 - If AUTOMATED CITATION CHECK says "ALL CITATIONS PASSED" → write "No page errors (verified by automated check)"
 
-## 4. VERDICT: <SAFE or UNSAFE>
+## 5. VERDICT: <SAFE or UNSAFE>
 
-## 5. CORRECTIONS
+## 6. CORRECTIONS
 Format:
 - **FIX RISK**: <Strict Instruction to add/modify>
   * *Citation:* [doc_id] Page <N>. `"<EXACT QUOTE FROM SOURCE>"` (N from ## Page marker)
   * *Reason:* <Why this fixes the risk>
+- **ADD_SOURCE**: <Add citation from underutilized source document>
+  * *Type:* Missing Source Coverage / Low Citation Variance
+  * *Source Reference:* [doc_id] Page <N>. `"<EXACT QUOTE FROM SOURCE>"`
+  * *Reason:* <e.g., "Source has relevant Excludes note not cited" or "Page X has additional criteria not covered">
 - **FIX_PAGE**: <Correct page number for citation [X]>
   * *Wrong:* [doc_id] Page <X>
   * *Correct:* [doc_id] Page <Y> (from ## Page Y marker)
@@ -414,13 +495,15 @@ Format:
 If you cannot find supporting text in ANY source document, DO NOT propose the fix.
 **RULE:** For AMBIGUOUS, verify the STATEMENT being supported, not just the quote text.
 
-## 6. METRICS
+## 7. METRICS
 RISK_COUNT: <Count of FIX RISK items found above>
+ADD_SOURCE_COUNT: <Count of ADD_SOURCE items found above>
 PAGE_ERRORS_COUNT: <Count of FIX_PAGE items found above>
 DOC_ERRORS_COUNT: <Count of FIX_DOC items found above>
 OVERFLOW_COUNT: <Count of FIX_OVERFLOW items>
 AMBIGUOUS_COUNT: <Count of FIX_AMBIGUOUS items>
 CROSS_REF_ISSUES: <Count of cross-references with missing coverage>
+SOURCE_COVERAGE: [ALL SOURCES USED / GAPS FOUND]
 
 start answer with # ANSWER
 ''')
@@ -480,6 +563,8 @@ $citation_errors
 ## 1. EXECUTIVE SUMMARY
 - **Safety Status**: [PASSED / FAILED] (Based on Red Team)
 - **Usability Status**: [HIGH / NEEDS IMPROVEMENT] (Based on Mentor)
+- **Source Coverage**: [ALL SOURCES USED / GAPS - see corrections]
+- **Citation Variance**: [HIGH / LOW - see ADD_SOURCE corrections]
 - **Page Number Issues**: [NONE / FOUND - see corrections]
 - **Doc ID Issues**: [NONE / FOUND - see corrections]
 - **Ambiguous Citations**: [NONE / RESOLVED - see corrections]
@@ -506,6 +591,14 @@ $citation_errors
 - **[CLARIFY]**: <EXACT INSTRUCTION>
   * *Source:* Mentor
   * *Reason:* <Why?>
+```
+
+**For ADD_SOURCE** (Missing source coverage):
+```
+- **[ADD_SOURCE]**: <Instruction to add citation from underutilized source>
+  * *Source:* <Red Team / Mentor>
+  * *Reason:* <e.g., "Source [doc_id] has relevant content not cited" or "Low citation variance on page X">
+  * *Citation:* [doc_id] Page <N>. `"<EXACT QUOTE FROM SOURCE>"`
 ```
 
 **For FIX_PAGE** (Page number corrections):
@@ -568,17 +661,34 @@ Prove that you did not ignore the Compliance Officer.
 4. **Doc ID Corrections Applied**: <Count of FIX_DOC items>
 5. **Overflow Citations Fixed**: <Count of FIX_OVERFLOW items>
 6. **Ambiguous Citations Resolved**: <Count of FIX_AMBIGUOUS items>
-7. **Discrepancy Explanation**: 
+7. **Discrepancy Explanation**:
    - If (1) > (2), explicitly state WHY you rejected a safety finding
    - If (1) == (2), write "All risks addressed."
 
-## 4. METRICS
+## 4. SOURCE COVERAGE RECONCILIATION
+1. **Total Source Documents Provided**: <Count>
+2. **Sources with Citations in DRAFT**: <Count>
+3. **Sources in CRITERIA/INSTRUCTIONS** (MANDATORY CHECK):
+   - Sources appearing in CRITERIA: <list doc_ids with counts>
+   - Sources appearing in INSTRUCTIONS: <list doc_ids with counts>
+   - Sources ONLY in SUMMARY (critical gap): <list doc_ids or "None">
+4. **ADD_SOURCE Corrections from Mentor**: <Count>
+5. **ADD_SOURCE Corrections from Red Team**: <Count>
+6. **ADD_SOURCE Corrections Approved**: <Count of [ADD_SOURCE] items in Section 2>
+7. **Sources Confirmed Irrelevant**: <List doc_ids with accepted justifications from DRAFT's UNUSED SOURCES>
+8. **Unresolved Gaps**: <List any sources not in CRITERIA/INSTRUCTIONS without justification, or "None">
+9. **Citation Variance Status**: [HIGH / LOW]
+   - If LOW: List pages/locations that need more diverse citations
+
+## 5. METRICS
 CORRECTION_COUNT: <Total count of approved items>
 BLOCK_RISK_COUNT: <Count of safety fixes>
 ADD_STEP_COUNT: <Count of new steps>
+ADD_SOURCE_COUNT: <Count of source coverage fixes>
 CLARIFY_COUNT: <Count of wording fixes>
 FIX_PAGE_COUNT: <Count of page corrections>
 FIX_DOC_COUNT: <Count of doc_id corrections>
+SOURCE_COVERAGE_STATUS: [ALL SOURCES USED / GAPS EXIST]
 STATUS: [SECURE / RISKY]
 
 *(Select RISKY only if you rejected a safety finding without a strong Source-based reason)*
@@ -732,17 +842,39 @@ Before writing ANY `[[doc_id:X | "anchor phrase"]]`, verify:
 | 1 | ... | DRAFT [1] | abc123 | 95 | "...treatment of a condition or for prophylactic use..." | "treatment of a condition" |
 | 2 | ... | CORRECTIONS | def456 | 67 | "...Use additional code to identify..." | "Use additional code" |
 
+## UNUSED SOURCES LOG
+If any provided source document has NO citations in the final output, document why:
+
+| Doc ID | Filename | Reason Not Used |
+|--------|----------|-----------------|
+| abc123 | file.pdf | <Specific justification: e.g., "Document covers pediatric codes only; target code is adult-specific", "No mention of code or related conditions after thorough search"> |
+
+**If ALL sources contributed citations, write:** "All provided sources contributed citations to the final output."
+
+## CITATION VARIANCE LOG
+| Doc ID | In CRITERIA? | In INSTRUCTIONS? | Pages Cited | Locations Per Page |
+|--------|--------------|------------------|-------------|-------------------|
+| abc123 | YES (2) | YES (3) | 45, 67, 89 | Page 45: Definition, Excludes note; Page 67: Code First |
+| def456 | YES (1) | NO | 12 | Page 12: Exclusion criteria |
+
+⚠️ If any source has NO in BOTH "In CRITERIA?" and "In INSTRUCTIONS?" columns:
+- It MUST be justified in UNUSED SOURCES LOG above
+- Otherwise, this is a CRITICAL GAP and output should be marked as FAILED
+
 ## SELF-CHECK RESULTS
 
 Answer YES or NO for each:
 
 1. **All anchors use COLON `:` between doc_id and page?** [YES/NO]
 2. **All anchors use PIPE `|` before the phrase?** [YES/NO]
-3. **All anchors are CONTINUOUS (no skipped words/sentences)?** [YES/NO]  
+3. **All anchors are CONTINUOUS (no skipped words/sentences)?** [YES/NO]
 4. **Did I avoid "stitching" non-adjacent words?** [YES/NO]
 5. **If concepts were separated, did I split citations or use a partial anchor?** [YES/NO]
 6. **Every Anchor appears inside its Source Quote exactly once as ⟦...⟧?** [YES/NO]
 7. **Every doc_id matches the document where the quote is found?** [YES/NO]
+8. **All provided sources either have citations OR documented justification in UNUSED SOURCES LOG?** [YES/NO]
+9. **Citations are distributed across multiple pages/locations (not all from same spot)?** [YES/NO]
+10. **Every source document has at least one citation in CRITERIA or INSTRUCTIONS (not just SUMMARY)?** [YES/NO]
 
 **If ANY answer is NO → Go back and fix before submitting!**
 
@@ -750,8 +882,13 @@ Answer YES or NO for each:
 - Corrections Applied: <Count>
 - Citations from DRAFT: <Count>
 - Citations from CORRECTIONS: <Count>
+- ADD_SOURCE Corrections Applied: <Count or "None">
 - Page Corrections ([FIX_PAGE]): <Count or "None">
 - Doc ID Corrections ([FIX_DOC]): <Count or "None">
+- Source Documents Provided: <Count>
+- Source Documents with Citations: <Count>
+- Unused Sources (with justification): <Count or "None - all sources used">
+- Citation Variance: [HIGH / LOW] (HIGH = multiple pages and locations per document)
 
 ## STATUS
 **[VERIFIED]**

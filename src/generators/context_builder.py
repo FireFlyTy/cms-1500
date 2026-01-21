@@ -146,7 +146,7 @@ def build_sources_context(
         wildcard_patterns = get_wildcard_patterns_for_code(code)
 
         # Get document IDs, pages, and file info for this code
-        # NOTE: document_codes.document_id = documents.file_hash (NOT documents.id)
+        # NOTE: document_codes.document_id = documents.file_hash
         # FILTER: Exclude policy documents
         # MATCH: Exact code OR wildcard patterns that cover this code
         pattern_placeholders = ','.join('?' * len(wildcard_patterns))
