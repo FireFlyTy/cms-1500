@@ -1814,7 +1814,7 @@ export default function KnowledgeBaseApp() {
             >
               <span className="flex items-center gap-2">
                 <Zap className="w-4 h-4" />
-                Guideline Rules
+                ICD10/CPT Rules
               </span>
             </button>
             <button
@@ -1827,7 +1827,7 @@ export default function KnowledgeBaseApp() {
             >
               <span className="flex items-center gap-2">
                 <Shield className="w-4 h-4" />
-                Claim Rules
+                CMS-1500 Rules
               </span>
             </button>
           </div>

@@ -11,7 +11,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 # Default database path relative to project root
-_default_db_path = PROJECT_ROOT / "data" / "processed" / "reference.db"
+_default_db_path = PROJECT_ROOT / "data" / "db" / "reference.db"
 DATABASE_PATH = os.getenv("DATABASE_PATH", str(_default_db_path))
 
 

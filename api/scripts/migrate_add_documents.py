@@ -7,7 +7,7 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path("data/processed/reference.db")
+DB_PATH = Path("data/db/reference.db")
 
 MIGRATION = """
 -- Documents metadata

@@ -7,13 +7,14 @@ import re
 import csv
 from pathlib import Path
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add project root to path (api/scripts/ -> api/ -> project root)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import (
-    HCPCS_DIR, NCCI_DIR, ICD10_DIR,
+    HCPCS_DIR, NCCI_DIR, ICD10_DIR, CPT_DIR,
     REFERENCE_DB_PATH, EXPECTED_FILES
 )
+import pandas as pd
 from src.db.models import init_db
 
 try:
@@ -208,32 +209,89 @@ def load_ncci_mue(conn, filepath: Path, table_name: str):
 def load_icd10_codes(conn, filepath: Path):
     """Load ICD-10 codes from csv"""
     print(f"Loading ICD-10 codes from {filepath.name}...")
-    
+
     count = 0
     with open(filepath, "r", encoding="utf-8-sig") as f:
         # Detect delimiter
         sample = f.read(1024)
         f.seek(0)
-        
+
         try:
             dialect = csv.Sniffer().sniff(sample)
             reader = csv.DictReader(f, delimiter=dialect.delimiter)
         except csv.Error:
             reader = csv.DictReader(f)
-        
+
         for row in reader:
             code = row.get("code") or row.get("Code") or row.get("CODE")
             desc = row.get("description") or row.get("Description") or row.get("DESCRIPTION")
-            
+
             if code:
                 conn.execute("""
                     INSERT OR REPLACE INTO icd10 (code, description)
                     VALUES (?, ?)
                 """, (code.replace(".", "").upper(), desc))
                 count += 1
-    
+
     conn.commit()
     print(f"  ✓ Loaded {count} ICD-10 codes")
+    return count
+
+
+def load_cpt_rvu(conn, filepath: Path):
+    """Load CPT codes from CMS RVU file"""
+    print(f"Loading CPT codes from {filepath.name}...")
+
+    # Read CSV, skip header rows
+    df = pd.read_csv(filepath, skiprows=9, low_memory=False)
+
+    # Get code and description
+    df_codes = df[['HCPCS', 'DESCRIPTION', 'CODE']].dropna(subset=['HCPCS'])
+    df_codes = df_codes[df_codes['HCPCS'].astype(str).str.strip() != '']
+    df_codes.columns = ['code', 'description', 'status']
+    df_codes['code'] = df_codes['code'].astype(str).str.strip()
+    df_codes['description'] = df_codes['description'].astype(str).str.strip()
+    df_codes = df_codes.drop_duplicates(subset=['code'], keep='first')
+
+    count = 0
+    for _, row in df_codes.iterrows():
+        conn.execute("""
+            INSERT OR REPLACE INTO cpt (code, description, status)
+            VALUES (?, ?, ?)
+        """, (row['code'], row['description'], row['status']))
+        count += 1
+        if count % 5000 == 0:
+            print(f"  Loaded {count} codes...")
+
+    conn.commit()
+    print(f"  ✓ Loaded {count} CPT codes from RVU")
+    return count
+
+
+def load_cpt_dhs_addendum(conn, filepath: Path):
+    """Load additional CPT codes from DHS addendum"""
+    print(f"Loading CPT codes from {filepath.name}...")
+
+    df = pd.read_excel(filepath, header=None)
+
+    # Extract codes (code in column 0, description in column 1)
+    count = 0
+    for idx, row in df.iterrows():
+        val = str(row[0]).strip()
+        # Check if it looks like a CPT code (4-6 chars, starts with digit or letter)
+        if len(val) >= 4 and len(val) <= 6 and (val[0].isdigit() or val[0] in 'AEJGHQST'):
+            desc = str(row[1]).strip() if pd.notna(row[1]) else ''
+            if desc and desc != 'nan':
+                conn.execute("""
+                    INSERT INTO cpt (code, description)
+                    VALUES (?, ?)
+                    ON CONFLICT(code) DO UPDATE SET
+                        description = COALESCE(NULLIF(cpt.description, ''), excluded.description)
+                """, (val, desc))
+                count += 1
+
+    conn.commit()
+    print(f"  ✓ Loaded {count} additional CPT codes from DHS addendum")
     return count
 
 
@@ -288,7 +346,21 @@ def main():
         stats["icd10"] = load_icd10_codes(conn, icd10_path)
     else:
         print(f"⚠ ICD-10 codes not found: {icd10_path}")
-    
+
+    # Load CPT from RVU file
+    cpt_rvu_path = CPT_DIR / EXPECTED_FILES["cpt"]["rvu"]
+    if cpt_rvu_path.exists():
+        stats["cpt_rvu"] = load_cpt_rvu(conn, cpt_rvu_path)
+    else:
+        print(f"⚠ CPT RVU file not found: {cpt_rvu_path}")
+
+    # Load CPT from DHS addendum
+    cpt_dhs_path = CPT_DIR / EXPECTED_FILES["cpt"]["dhs_addendum"]
+    if cpt_dhs_path.exists():
+        stats["cpt_dhs"] = load_cpt_dhs_addendum(conn, cpt_dhs_path)
+    else:
+        print(f"⚠ CPT DHS addendum not found: {cpt_dhs_path}")
+
     conn.close()
     
     # Summary

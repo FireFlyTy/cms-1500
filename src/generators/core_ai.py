@@ -53,18 +53,24 @@ async def _stream_google(prompt: str, thinking_budget: int) -> AsyncGenerator[st
     try:
         contents = [types.Content(role='user', parts=[types.Part.from_text(text=prompt)])]
 
-        thinking_config = types.ThinkingConfig(
-            include_thoughts=True,
-            thinking_budget=thinking_budget
-        )
+        # Build config - no thinking_config when thinking_budget is None
+        if thinking_budget is not None:
+            config = types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(
+                    include_thoughts=True,
+                    thinking_budget=thinking_budget
+                ),
+                temperature=0.7
+            )
+        else:
+            config = types.GenerateContentConfig(
+                temperature=0.7
+            )
 
         response_stream = await google_client.aio.models.generate_content_stream(
             model=GOOGLE_MODEL_NAME,
             contents=contents,
-            config=types.GenerateContentConfig(
-                thinking_config=thinking_config,
-                temperature=0.7
-            )
+            config=config
         )
 
         full_response_text = ''

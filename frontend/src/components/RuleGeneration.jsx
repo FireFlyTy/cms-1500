@@ -1094,9 +1094,15 @@ const CodeList = ({
     generated: true,
     ready: true
   });
+  const [expandedSubSections, setExpandedSubSections] = useState({});
 
   const toggleSection = (section) => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
+  };
+
+  const toggleSubSection = (sectionId, subLabel) => {
+    const key = `${sectionId}-${subLabel}`;
+    setExpandedSubSections(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
   const filterCodes = (codes) => codes.filter(c => {
@@ -1161,29 +1167,42 @@ const CodeList = ({
     );
   };
 
-  // SubSection for diagnoses/procedures
-  const SubSection = ({ label, codes }) => {
+  // SubSection for diagnoses/procedures (collapsed by default)
+  const SubSection = ({ sectionId, label, codes }) => {
     if (codes.length === 0) return null;
+    const key = `${sectionId}-${label}`;
+    const isExpanded = expandedSubSections[key] ?? false; // collapsed by default
+
     return (
-      <div className="p-3">
-        <div className="text-[10px] font-semibold uppercase px-1 pb-2" style={{ color: '#6b7280' }}>
+      <div className="px-3 py-2">
+        <button
+          onClick={() => toggleSubSection(sectionId, label)}
+          className="w-full flex items-center gap-2 text-xs font-medium uppercase tracking-wider mb-2 hover:text-gray-600 transition-colors"
+          style={{ color: '#9ca3af' }}
+        >
+          <ChevronRight
+            className="w-3 h-3 transition-transform"
+            style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+          />
           {label} ({codes.length})
-        </div>
-        <div className="space-y-1.5">
-          {codes.map(code => (
-            <CodeItem
-              key={code.code}
-              code={code}
-              isSelected={selectedCodes.has(code.code)}
-              canSelect={true}
-              generating={generating}
-              onToggleCode={onToggleCode}
-              onDeleteRule={onDeleteRule}
-              onViewRule={onViewRule}
-              onGenerate={onGenerateSingle}
-            />
-          ))}
-        </div>
+        </button>
+        {isExpanded && (
+          <div className="space-y-1.5">
+            {codes.map(code => (
+              <CodeItem
+                key={code.code}
+                code={code}
+                isSelected={selectedCodes.has(code.code)}
+                canSelect={true}
+                generating={generating}
+                onToggleCode={onToggleCode}
+                onDeleteRule={onDeleteRule}
+                onViewRule={onViewRule}
+                onGenerate={onGenerateSingle}
+              />
+            ))}
+          </div>
+        )}
       </div>
     );
   };
@@ -1265,8 +1284,8 @@ const CodeList = ({
               count={generatedCodes.length}
               color="#059669"
             >
-              <SubSection label="Diagnoses" codes={diagnosesWithRules} />
-              <SubSection label="Procedures" codes={proceduresWithRules} />
+              <SubSection sectionId="generated" label="Diagnoses" codes={diagnosesWithRules} />
+              <SubSection sectionId="generated" label="Procedures" codes={proceduresWithRules} />
             </Section>
 
             {/* Ready to Generate */}
@@ -1277,8 +1296,8 @@ const CodeList = ({
               count={readyToGenerate.length}
               color="#0090DA"
             >
-              <SubSection label="Diagnoses" codes={diagnosesWithoutRules} />
-              <SubSection label="Procedures" codes={proceduresWithoutRules} />
+              <SubSection sectionId="ready" label="Diagnoses" codes={diagnosesWithoutRules} />
+              <SubSection sectionId="ready" label="Procedures" codes={proceduresWithoutRules} />
             </Section>
           </>
         )}
@@ -1369,8 +1388,137 @@ export default function RuleGeneration() {
     }
   };
 
-  // Generate rules for given codes (batch or single)
-  const generateRules = async (codes) => {
+  // Generate a single rule (used by parallel processor)
+  const generateSingleRule = async (code) => {
+    console.log(`[Guideline] Starting generation for: ${code}`);
+
+    // Mark as generating (preserve any existing data)
+    setGenerationProgress(prev => ({
+      ...prev,
+      [code]: {
+        ...(prev[code] || {}),
+        status: 'generating',
+        steps: {
+          draft: { status: 'idle' }
+        }
+      }
+    }));
+
+    try {
+      const response = await fetch(`${API_BASE}/generate/${encodeURIComponent(code)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          code_type: 'ICD-10',
+          parallel_validators: true
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+          const data = parseSSELine(trimmed);
+          if (!data) continue;
+
+          const { step, type } = data;
+
+          if (step === 'done') {
+            setGenerationProgress(prev => ({
+              ...prev,
+              [code]: { ...prev[code], status: 'complete' }
+            }));
+            continue;
+          }
+
+          if (step === 'error') {
+            setGenerationProgress(prev => ({
+              ...prev,
+              [code]: { ...prev[code], status: 'error', error: data.message || 'Unknown error' }
+            }));
+            continue;
+          }
+
+          setGenerationProgress(prev => {
+            const prevCode = prev[code] || { status: 'generating', steps: {} };
+            const prevStep = prevCode.steps[step] || { status: 'idle', thinking: '', content: '' };
+            let updatedStep = { ...prevStep };
+
+            switch (type) {
+              case 'status':
+                updatedStep.status = data.status || 'streaming';
+                if (data.message) updatedStep.message = data.message;
+                break;
+              case 'thought':
+              case 'thinking':
+                updatedStep.status = 'streaming';
+                updatedStep.thinking = (updatedStep.thinking || '') + (data.thinking || data.content || '');
+                break;
+              case 'content':
+              case 'text':
+                updatedStep.status = 'streaming';
+                updatedStep.content = (updatedStep.content || '') + (data.content || data.text || '');
+                break;
+              case 'done':
+                updatedStep.status = 'done';
+                if (data.full_text) updatedStep.content = data.full_text;
+                if (data.full_thinking) updatedStep.thinking = data.full_thinking;
+                if (data.duration_ms) updatedStep.duration_ms = data.duration_ms;
+                if (data.corrections_count !== undefined) updatedStep.corrections_count = data.corrections_count;
+                if (data.verdict) updatedStep.verdict = data.verdict;
+                if (data.citations_check) updatedStep.citations_check = data.citations_check;
+                break;
+              case 'error':
+                updatedStep.status = 'error';
+                updatedStep.error = data.message;
+                break;
+            }
+
+            return {
+              ...prev,
+              [code]: { ...prevCode, steps: { ...prevCode.steps, [step]: updatedStep } }
+            };
+          });
+        }
+      }
+
+      console.log(`[Guideline] Completed generation for: ${code}`);
+      setGenerationProgress(prev => {
+        const currentStatus = prev[code]?.status;
+        if (currentStatus === 'generating' || currentStatus === 'pending') {
+          return { ...prev, [code]: { ...prev[code], status: 'complete' } };
+        }
+        return prev;
+      });
+
+    } catch (err) {
+      console.error(`[Guideline] Failed to generate rule for ${code}:`, err);
+      setGenerationProgress(prev => ({
+        ...prev,
+        [code]: { ...(prev[code] || {}), status: 'error', error: err.message }
+      }));
+    }
+  };
+
+  // Generate rules for given codes (batch or single) - parallel with concurrency limit
+  const generateRules = async (codes, concurrency = 5) => {
     if (codes.length === 0) return;
 
     setGenerating(true);
@@ -1387,130 +1535,30 @@ export default function RuleGeneration() {
     });
     setGenerationProgress(initialProgress);
 
-    // Generate sequentially
-    for (const code of codes) {
-      // Mark as generating
-      setGenerationProgress(prev => ({
-        ...prev,
-        [code]: {
-          ...prev[code],
-          status: 'generating',
-          steps: {
-            draft: { status: 'idle' }
-          }
+    // Wait a tick for React to apply initial state
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    // Process codes in parallel with concurrency limit using index-based approach
+    let currentIndex = 0;
+
+    const processNext = async () => {
+      while (currentIndex < codes.length) {
+        const index = currentIndex++;
+        const code = codes[index];
+        if (code) {
+          await generateSingleRule(code);
         }
-      }));
-
-      try {
-        const response = await fetch(`${API_BASE}/generate/${encodeURIComponent(code)}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            code,
-            code_type: 'ICD-10',
-            parallel_validators: true
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith('data: ')) continue;
-
-            const data = parseSSELine(trimmed);
-            if (!data) continue;
-
-            const { step, type } = data;
-
-            if (step === 'done') {
-              setGenerationProgress(prev => ({
-                ...prev,
-                [code]: { ...prev[code], status: 'complete' }
-              }));
-              continue;
-            }
-
-            if (step === 'error') {
-              setGenerationProgress(prev => ({
-                ...prev,
-                [code]: { ...prev[code], status: 'error', error: data.message || 'Unknown error' }
-              }));
-              continue;
-            }
-
-            setGenerationProgress(prev => {
-              const prevCode = prev[code] || { status: 'generating', steps: {} };
-              const prevStep = prevCode.steps[step] || { status: 'idle', thinking: '', content: '' };
-              let updatedStep = { ...prevStep };
-
-              switch (type) {
-                case 'status':
-                  updatedStep.status = data.status || 'streaming';
-                  if (data.message) updatedStep.message = data.message;
-                  break;
-                case 'thought':
-                case 'thinking':
-                  updatedStep.status = 'streaming';
-                  updatedStep.thinking = (updatedStep.thinking || '') + (data.thinking || data.content || '');
-                  break;
-                case 'content':
-                case 'text':
-                  updatedStep.status = 'streaming';
-                  updatedStep.content = (updatedStep.content || '') + (data.content || data.text || '');
-                  break;
-                case 'done':
-                  updatedStep.status = 'done';
-                  if (data.full_text) updatedStep.content = data.full_text;
-                  if (data.full_thinking) updatedStep.thinking = data.full_thinking;
-                  if (data.duration_ms) updatedStep.duration_ms = data.duration_ms;
-                  if (data.corrections_count !== undefined) updatedStep.corrections_count = data.corrections_count;
-                  if (data.verdict) updatedStep.verdict = data.verdict;
-                  if (data.citations_check) updatedStep.citations_check = data.citations_check;
-                  break;
-                case 'error':
-                  updatedStep.status = 'error';
-                  updatedStep.error = data.message;
-                  break;
-              }
-
-              return {
-                ...prev,
-                [code]: { ...prevCode, steps: { ...prevCode.steps, [step]: updatedStep } }
-              };
-            });
-          }
-        }
-
-        setGenerationProgress(prev => {
-          if (prev[code]?.status === 'generating') {
-            return { ...prev, [code]: { ...prev[code], status: 'complete' } };
-          }
-          return prev;
-        });
-
-      } catch (err) {
-        console.error(`Failed to generate rule for ${code}:`, err);
-        setGenerationProgress(prev => ({
-          ...prev,
-          [code]: { ...prev[code], status: 'error', error: err.message }
-        }));
       }
+    };
+
+    // Start up to 'concurrency' parallel workers
+    const workers = [];
+    for (let i = 0; i < Math.min(concurrency, codes.length); i++) {
+      workers.push(processNext());
     }
+
+    // Wait for all workers to complete
+    await Promise.all(workers);
 
     setGenerating(false);
     setSelectedCodes(new Set());

@@ -607,7 +607,110 @@ def parse_page_block(block: str, page_num: int) -> PageData:
             page.skip_reason = 'Empty or minimal content'
             page.page_type = 'empty'
     
+    # Post-process: validate codes and auto-find anchors
+    if page.content and page.codes:
+        page.codes = _postprocess_codes(page.codes, page.content)
+
     return page
+
+
+def _postprocess_codes(codes: List[CodeInfo], content: str) -> List[CodeInfo]:
+    """
+    Post-process extracted codes:
+    1. Validate that codes actually appear in content (filter false positives)
+    2. Auto-find anchors for codes with anchor=None
+    """
+    validated_codes = []
+    content_upper = content.upper()
+
+    for code_info in codes:
+        code = code_info.code.upper()
+
+        # Check if code appears in content
+        if code not in content_upper:
+            # Code doesn't appear - likely false positive, skip it
+            continue
+
+        # If anchor is missing, try to find it in content
+        if code_info.anchor is None:
+            anchor = _find_code_anchor(code_info.code, content)
+            if anchor:
+                code_info = CodeInfo(
+                    code=code_info.code,
+                    type=code_info.type,
+                    context=code_info.context,
+                    anchor=anchor
+                )
+
+        validated_codes.append(code_info)
+
+    return validated_codes
+
+
+def _find_code_anchor(code: str, content: str) -> Optional[str]:
+    """
+    Find anchor text for a code in content.
+    Extracts a short phrase (5-60 chars) containing the code.
+    """
+    # Find the code in content (case-insensitive)
+    pattern = re.compile(re.escape(code), re.IGNORECASE)
+    match = pattern.search(content)
+
+    if not match:
+        return None
+
+    start_pos = match.start()
+    end_pos = match.end()
+
+    # Strategy 1: Check if code is in parentheses like "text (CODE)"
+    # Look for pattern: "descriptive text (CODE)" or "(CODE)"
+    paren_pattern = re.compile(
+        r'([^()\n]{3,50})\s*\(' + re.escape(code) + r'\)',
+        re.IGNORECASE
+    )
+    paren_match = paren_pattern.search(content)
+    if paren_match:
+        # Found "text (CODE)" pattern - use "text (CODE)" as anchor
+        anchor_start = paren_match.start()
+        anchor_end = paren_match.end() + 1  # Include closing paren
+        return content[anchor_start:anchor_end].strip().strip('",;')
+
+    # Strategy 2: Look for "CODE ... text" pattern (code first, then description)
+    after_pattern = re.compile(
+        re.escape(code) + r'[\s,:\-]+([^.\n]{3,40})',
+        re.IGNORECASE
+    )
+    after_match = after_pattern.search(content)
+    if after_match:
+        return content[after_match.start():after_match.end()].strip().strip('",;')
+
+    # Strategy 3: Extract minimal context around code
+    # Go back to find start of phrase (commas, parens, or sentence boundaries)
+    context_start = start_pos
+    for i in range(start_pos - 1, max(0, start_pos - 40), -1):
+        if content[i] in '.,;()\n':
+            context_start = i + 1
+            break
+
+    # Go forward to find end of phrase
+    context_end = end_pos
+    for i in range(end_pos, min(len(content), end_pos + 20)):
+        if content[i] in '.,;()\n':
+            context_end = i
+            break
+
+    anchor = content[context_start:context_end].strip().strip('",;: ')
+
+    # If anchor is just the code, try to get a bit more context
+    if anchor.upper() == code.upper():
+        # Expand slightly
+        context_start = max(0, start_pos - 30)
+        context_end = min(len(content), end_pos + 10)
+        anchor = content[context_start:context_end].strip()
+        # Clean up
+        anchor = anchor.strip('.,;:!? \t\n"')
+
+    return anchor if len(anchor) >= len(code) else None
 
 
 def parse_chunk_response(response_text: str, start_page: int, expected_count: int) -> List[PageData]:

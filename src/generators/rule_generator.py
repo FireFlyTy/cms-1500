@@ -50,7 +50,7 @@ from src.validators.citations import (
 # ============================================================
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-RULES_DIR = os.path.join(BASE_DIR, "data", "rules")
+RULES_DIR = os.path.join(BASE_DIR, "data", "processed", "rules")
 
 os.makedirs(RULES_DIR, exist_ok=True)
 

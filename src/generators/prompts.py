@@ -1118,7 +1118,7 @@ Extract ALL rules from the markdown and output valid JSON:
   "validatable_rules": [
     {
       "id": "{CODE}-{TYPE}-{NNN}",
-      "type": "{diagnosis_conflict | sequencing | expected_code | bundling | unit_limit | age_check | gender_check | modifier_required | pos_required | precert_required}",
+      "type": "{diagnosis_conflict | sequencing | expected_code | bundling | unit_limit | age_check | gender_check | modifier_required | pos_required | precert_required | usage_review | diagnosis_format}",
       "severity": "{error | warning | info}",
       "title": "{Short descriptive title}",
       "field": "{schema field path}",
@@ -1131,6 +1131,16 @@ Extract ALL rules from the markdown and output valid JSON:
             "value": "{value or pattern}"
           }
         ]
+      },
+      "display": {
+        "template": "{sequencing | expected | conflict | unit_limit | bundling | usage | pos | modifier | format | unknown}",
+        "subject": ["{code(s) being validated}"],
+        "verb": "{action/relationship phrase}",
+        "object": ["{target code(s) or value, or null}"],
+        "qualifier": "{optional context or null}",
+        "value": "{number or null}",
+        "unit": "{units | visits | per DOS | null}",
+        "formatted": "{REQUIRED: pre-formatted sentence with **bold** codes/values}"
       },
       "action": "{REJECT | WARN | INFO}",
       "message": "{user-facing message}",
@@ -1202,6 +1212,132 @@ Extract ALL rules from the markdown and output valid JSON:
 - "diagnosisCodes contains E11.9" → `{"field": "diagnosisCodes[].code", "op": "contains", "value": "E11.9"}`
 - "units > 2" → `{"field": "serviceLines[].procedureCode.units", "op": "greater_than", "value": 2}`
 - "E11.9 appears before O24" → `{"field": "diagnosisCodes", "op": "position_before", "value": ["E11.9", "O24"]}`
+
+## DISPLAY TEMPLATES
+
+Each rule MUST include a `display` object for UI rendering. The `formatted` field is ALWAYS required.
+
+**Templates and their structure:**
+
+| Template | Subject | Verb | Object | Value/Unit |
+|----------|---------|------|--------|------------|
+| `sequencing` | primary code(s) | "must be primary when" | secondary code(s) | - |
+| `expected` | has code(s) | "should include" | expected code(s) | - |
+| `conflict` | code(s) | "cannot appear with" | conflicting code(s) | - |
+| `unit_limit` | procedure code | "units cannot exceed" | - | value + "per DOS" |
+| `bundling` | code group 1 | "cannot be billed same day as" | code group 2 | - |
+| `usage` | diagnosis code | "count exceeding" | - | value + "visits/units" |
+| `pos` | procedure code | "requires place of service" | POS code(s) | - |
+| `modifier` | procedure code | "requires modifier" | modifier code(s) | - |
+| `format` | code | "is invalid -" | - | - |
+| `unknown` | - | - | - | use `formatted` only |
+
+**Display Examples:**
+
+```json
+// sequencing
+"display": {
+  "template": "sequencing",
+  "subject": ["E11.9"],
+  "verb": "must be primary when",
+  "object": ["O24.%"],
+  "qualifier": "is present",
+  "value": null,
+  "unit": null,
+  "formatted": "**E11.9** must be primary when **O24.%** is present"
+}
+
+// unit_limit
+"display": {
+  "template": "unit_limit",
+  "subject": ["82948"],
+  "verb": "units cannot exceed",
+  "object": null,
+  "qualifier": null,
+  "value": 2,
+  "unit": "per DOS",
+  "formatted": "**82948** units cannot exceed **2** per DOS"
+}
+
+// bundling
+"display": {
+  "template": "bundling",
+  "subject": ["82948", "82962"],
+  "verb": "cannot be billed same day as",
+  "object": ["78811", "78812", "78813"],
+  "qualifier": null,
+  "value": null,
+  "unit": null,
+  "formatted": "**82948, 82962** cannot be billed same day as **78811, 78812, 78813**"
+}
+
+// conflict
+"display": {
+  "template": "conflict",
+  "subject": ["E11.9"],
+  "verb": "cannot appear with",
+  "object": ["E10.%", "E13.%"],
+  "qualifier": "mutually exclusive diabetes types",
+  "value": null,
+  "unit": null,
+  "formatted": "**E11.9** cannot appear with **E10.%, E13.%**"
+}
+
+// expected
+"display": {
+  "template": "expected",
+  "subject": ["E11.%"],
+  "verb": "should include",
+  "object": ["Z79.4", "Z79.84"],
+  "qualifier": "for long-term medication use",
+  "value": null,
+  "unit": null,
+  "formatted": "**E11.%** should include **Z79.4** or **Z79.84** for long-term medication use"
+}
+
+// usage (visit limits, historical checks)
+"display": {
+  "template": "usage",
+  "subject": ["F32.9"],
+  "verb": "visit count exceeding",
+  "object": null,
+  "qualifier": "requires clinical review",
+  "value": 6,
+  "unit": "visits",
+  "formatted": "**F32.9** visit count exceeding **6** visits requires clinical review"
+}
+
+// pos (place of service)
+"display": {
+  "template": "pos",
+  "subject": ["E0781"],
+  "verb": "requires place of service",
+  "object": ["12"],
+  "qualifier": "home setting",
+  "value": null,
+  "unit": null,
+  "formatted": "**E0781** requires place of service **12** (home setting)"
+}
+
+// unknown (fallback for complex rules)
+"display": {
+  "template": "unknown",
+  "subject": null,
+  "verb": null,
+  "object": null,
+  "qualifier": null,
+  "value": null,
+  "unit": null,
+  "formatted": "Claims with **E10.A** are invalid — code requires 5th or 6th character for specificity"
+}
+```
+
+**CRITICAL for `display`:**
+- `formatted` field is ALWAYS required as fallback for UI
+- Use **bold** (double asterisks) for codes and numeric values
+- Use _italic_ (underscores) for qualifiers/context if needed
+- `subject` and `object` should contain actual code values (not descriptions)
+- For `unknown` template, provide only `formatted` text, set other fields to null
 
 ## IMPORTANT
 

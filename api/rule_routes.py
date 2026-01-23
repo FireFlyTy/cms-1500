@@ -40,10 +40,98 @@ router = APIRouter(prefix="/api/rules", tags=["rules"])
 
 # Directories
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RULES_DIR = os.path.join(BASE_DIR, "data", "rules")
+RULES_DIR = os.path.join(BASE_DIR, "data", "processed", "rules")
 DOCUMENTS_DIR = os.path.join(BASE_DIR, "data", "processed", "documents")
 
 os.makedirs(RULES_DIR, exist_ok=True)
+
+
+# ============================================================
+# RULES CACHE (for fast status lookups)
+# ============================================================
+
+_rules_cache = {}
+_rules_cache_time = 0
+_CACHE_TTL = 30  # seconds
+
+
+def _scan_rules_directory() -> dict:
+    """Scan RULES_DIR once and build cache of all existing rules."""
+    cache = {}
+
+    if not os.path.exists(RULES_DIR):
+        return cache
+
+    for code_dir in os.listdir(RULES_DIR):
+        code_path = os.path.join(RULES_DIR, code_dir)
+        if not os.path.isdir(code_path):
+            continue
+
+        # Check for guideline rule versions (v1, v2, etc.)
+        guideline_versions = [d for d in os.listdir(code_path)
+                             if d.startswith('v') and d[1:].isdigit()]
+
+        # Check for CMS rule versions
+        cms_path = os.path.join(code_path, "cms")
+        cms_versions = []
+        if os.path.exists(cms_path) and os.path.isdir(cms_path):
+            cms_versions = [d for d in os.listdir(cms_path)
+                          if d.startswith('v') and d[1:].isdigit()]
+
+        if guideline_versions or cms_versions:
+            # Convert dir name back to code pattern
+            # E11_9 → E11.9, E11_% → E11.%, E00_E89 → E00:E89
+            pattern = code_dir
+
+            # Detect range pattern (E00_E89 where both parts are code-like)
+            if '_' in pattern and '%' not in pattern:
+                parts = pattern.split('_')
+                if len(parts) == 2:
+                    # Check if both parts look like ICD-10 chapter codes (letter + digits)
+                    import re
+                    if (re.match(r'^[A-Z]\d+$', parts[0]) and
+                        re.match(r'^[A-Z]\d+$', parts[1])):
+                        pattern = f"{parts[0]}:{parts[1]}"
+
+            # For non-range patterns, convert _ back to .
+            if ':' not in pattern:
+                # Trailing _ means wildcard % (E10_A_ → E10.A%)
+                if pattern.endswith('_'):
+                    pattern = pattern[:-1] + '%'
+                pattern = pattern.replace("_", ".")
+                # Fix wildcards: E11.% not E11..
+                if pattern.endswith('.%'):
+                    pattern = pattern[:-2] + '%'
+                elif '.%' in pattern:
+                    pattern = pattern.replace('.%', '%')
+
+            cache[pattern.upper()] = {
+                'guideline_versions': sorted(guideline_versions, key=lambda x: int(x[1:])) if guideline_versions else [],
+                'cms_versions': sorted(cms_versions, key=lambda x: int(x[1:])) if cms_versions else [],
+                'path': code_path
+            }
+
+    return cache
+
+
+def _get_rules_cache() -> dict:
+    """Get rules cache, refreshing if stale."""
+    global _rules_cache, _rules_cache_time
+
+    import time
+    now = time.time()
+
+    if now - _rules_cache_time > _CACHE_TTL:
+        _rules_cache = _scan_rules_directory()
+        _rules_cache_time = now
+
+    return _rules_cache
+
+
+def invalidate_rules_cache():
+    """Call this after creating/deleting rules."""
+    global _rules_cache_time
+    _rules_cache_time = 0
 
 
 # ============================================================
@@ -166,6 +254,24 @@ def code_matches_pattern(code: str, pattern: str) -> bool:
                     return False  # Different code types (ICD vs CPT)
                 if code[0].isalpha() != end[0].isalpha():
                     return False
+
+                # Check code structure matches (ICD-10 has dots, HCPCS doesn't)
+                code_has_dot = '.' in code
+                range_has_dot = '.' in start or '.' in end
+                if code_has_dot != range_has_dot:
+                    return False  # Different code structures (ICD-10 vs HCPCS)
+
+                # For ICD-10 ranges without dots in pattern (E00:E89),
+                # only match ICD-10 codes (which have dots)
+                if not range_has_dot and code[0].isalpha() and len(start) <= 3 and len(end) <= 3:
+                    # This is likely an ICD-10 chapter range like E00:E89
+                    # Should only match codes that start with this prefix
+                    if not (code.startswith(start[0]) and len(code) <= 7):
+                        return False
+                    # ICD-10 codes typically have format like E11.9, E00.0
+                    # HCPCS E-codes are like E0781, E2101 (no dots, 5 chars)
+                    if len(code) == 5 and code[1:].isdigit():
+                        return False  # This is HCPCS, not ICD-10
 
                 return start <= code <= end
             except:
@@ -374,50 +480,43 @@ def get_rule_status(code: str, cascade: bool = True) -> Dict:
 
 
 def _check_rule_exists(pattern: str) -> Dict:
-    """Проверяет существование правила для конкретного паттерна."""
-    # Normalize pattern for filesystem (keep % as-is to match saved folder names)
-    safe_pattern = pattern.replace(".", "_").replace("/", "_").replace(":", "-")
+    """Проверяет существование правила для конкретного паттерна (используя кэш)."""
+    cache = _get_rules_cache()
+    pattern_upper = pattern.upper()
 
-    # Check versioned structure first
+    # Check cache first (fast path)
+    if pattern_upper in cache:
+        cached = cache[pattern_upper]
+        versions = cached.get('guideline_versions', [])
+        if versions:
+            latest = versions[-1]
+            return {
+                'has_rule': True,
+                'is_mock': False,  # Don't load JSON just to check this
+                'version': int(latest[1:]),
+                'created_at': None,
+                'validation_status': 'unknown',
+                'path': os.path.join(cached['path'], latest, "rule.json")
+            }
+
+    # Cache miss - check filesystem (shouldn't happen often)
+    safe_pattern = pattern.replace(".", "_").replace("/", "_").replace(":", "_").replace("-", "_")
     versioned_path = os.path.join(RULES_DIR, safe_pattern)
 
     if os.path.exists(versioned_path) and os.path.isdir(versioned_path):
-        versions = [d for d in os.listdir(versioned_path) if d.startswith('v')]
+        versions = [d for d in os.listdir(versioned_path) if d.startswith('v') and d[1:].isdigit()]
         if versions:
             latest = sorted(versions, key=lambda x: int(x[1:]))[-1]
             rule_path = os.path.join(versioned_path, latest, "rule.json")
             if os.path.exists(rule_path):
-                try:
-                    with open(rule_path, 'r') as f:
-                        rule = json.load(f)
-                    return {
-                        'has_rule': True,
-                        'is_mock': rule.get('is_mock', False),
-                        'version': rule.get('version', 1),
-                        'created_at': rule.get('created_at'),
-                        'validation_status': rule.get('validation_status', 'unknown'),
-                        'path': rule_path
-                    }
-                except:
-                    pass
-
-    # Fallback to old flat structure
-    rule_path = os.path.join(RULES_DIR, f"{safe_pattern}.json")
-
-    if os.path.exists(rule_path):
-        try:
-            with open(rule_path, 'r') as f:
-                rule = json.load(f)
-            return {
-                'has_rule': True,
-                'is_mock': rule.get('is_mock', False),
-                'version': rule.get('version', '1.0'),
-                'created_at': rule.get('created_at'),
-                'updated_at': rule.get('updated_at'),
-                'path': rule_path
-            }
-        except:
-            pass
+                return {
+                    'has_rule': True,
+                    'is_mock': False,
+                    'version': int(latest[1:]),
+                    'created_at': None,
+                    'validation_status': 'unknown',
+                    'path': rule_path
+                }
 
     return {'has_rule': False, 'is_mock': False}
 
@@ -814,7 +913,7 @@ async def get_generation_log(code: str, version: Optional[int] = None):
     """
     Получает лог генерации для кода.
     """
-    code_dir = code.replace(".", "_").replace("/", "_")
+    code_dir = code.replace(".", "_").replace("/", "_").replace(":", "_").replace("-", "_")
     versioned_path = os.path.join(RULES_DIR, code_dir)
 
     if not os.path.exists(versioned_path):
@@ -897,7 +996,7 @@ async def delete_rule(code: str):
     deleted = False
 
     # Delete versioned structure
-    code_dir = code.replace(".", "_").replace("/", "_")
+    code_dir = code.replace(".", "_").replace("/", "_").replace(":", "_").replace("-", "_")
     versioned_path = os.path.join(RULES_DIR, code_dir)
 
     if os.path.exists(versioned_path):
@@ -915,6 +1014,7 @@ async def delete_rule(code: str):
     if not deleted:
         raise HTTPException(status_code=404, detail=f"No rule found for code '{code}'")
 
+    invalidate_rules_cache()
     return {'status': 'deleted', 'code': code}
 
 
@@ -1004,7 +1104,7 @@ def get_cms_rule_status(code: str) -> Dict:
             'sources': {...}
         }
     """
-    code_dir = code.replace(".", "_").replace("/", "_")
+    code_dir = code.replace(".", "_").replace("/", "_").replace(":", "_").replace("-", "_")
     cms_path = os.path.join(RULES_DIR, code_dir, "cms")
 
     if not os.path.exists(cms_path):
@@ -1064,7 +1164,7 @@ async def get_code_cms_rule(code: str, version: Optional[int] = None):
         code: Код (E11.9, 99213, G0101)
         version: Версия правила (по умолчанию - последняя)
     """
-    code_dir = code.replace(".", "_").replace("/", "_")
+    code_dir = code.replace(".", "_").replace("/", "_").replace(":", "_").replace("-", "_")
     cms_path = os.path.join(RULES_DIR, code_dir, "cms")
 
     if not os.path.exists(cms_path):
@@ -1111,7 +1211,7 @@ async def get_cms_generation_log(code: str, version: Optional[int] = None):
     """
     Получает лог генерации CMS правила.
     """
-    code_dir = code.replace(".", "_").replace("/", "_")
+    code_dir = code.replace(".", "_").replace("/", "_").replace(":", "_").replace("-", "_")
     cms_path = os.path.join(RULES_DIR, code_dir, "cms")
 
     if not os.path.exists(cms_path):
@@ -1180,7 +1280,7 @@ async def delete_cms_rule(code: str):
     """
     Удаляет CMS правило для кода.
     """
-    code_dir = code.replace(".", "_").replace("/", "_")
+    code_dir = code.replace(".", "_").replace("/", "_").replace(":", "_").replace("-", "_")
     cms_path = os.path.join(RULES_DIR, code_dir, "cms")
 
     if not os.path.exists(cms_path):
@@ -1189,4 +1289,5 @@ async def delete_cms_rule(code: str):
     import shutil
     shutil.rmtree(cms_path)
 
+    invalidate_rules_cache()
     return {'status': 'deleted', 'code': code, 'type': 'cms_rule'}
