@@ -567,17 +567,23 @@ def get_guideline_text_for_code(code: str, document_ids: Optional[List[str]] = N
 # ============================================================
 
 @router.get("/categories")
-async def get_categories():
+async def get_categories(rule_type: Optional[str] = "guideline"):
     """
     Получает список категорий с количеством кодов и статусом покрытия.
+
+    Args:
+        rule_type: "guideline" (default) or "cms" - which rule type to count
     """
     all_codes = get_all_codes_from_db()
     grouped = group_codes_by_category(all_codes)
 
     categories = []
     for category_name, codes in grouped.items():
-        # Count rules
-        codes_with_rules = sum(1 for c in codes if get_rule_status(c['code'])['has_rule'])
+        # Count rules based on rule_type
+        if rule_type == "cms":
+            codes_with_rules = sum(1 for c in codes if get_cms_rule_status(c['code'])['has_rule'])
+        else:
+            codes_with_rules = sum(1 for c in codes if get_rule_status(c['code'])['has_rule'])
 
         # Get color from first code's category_info (safe access)
         category_info = codes[0].get('category_info', {}) if codes else {}
@@ -1093,7 +1099,7 @@ async def get_rules_stats():
 
 def get_cms_rule_status(code: str) -> Dict:
     """
-    Проверяет статус CMS правила для кода.
+    Проверяет статус CMS правила для кода (использует кэш).
 
     Returns:
         {
@@ -1104,6 +1110,25 @@ def get_cms_rule_status(code: str) -> Dict:
             'sources': {...}
         }
     """
+    cache = _get_rules_cache()
+    code_upper = code.upper()
+
+    # Check cache first (fast path)
+    if code_upper in cache:
+        cached = cache[code_upper]
+        cms_versions = cached.get('cms_versions', [])
+        if cms_versions:
+            latest = cms_versions[-1]
+            return {
+                'has_rule': True,
+                'version': int(latest[1:]),
+                'created_at': None,  # Don't load JSON just to check
+                'path': os.path.join(cached['path'], 'cms', latest, "cms_rule.json"),
+                'sources': {},
+                'stats': {}
+            }
+
+    # Cache miss - check filesystem
     code_dir = code.replace(".", "_").replace("/", "_").replace(":", "_").replace("-", "_")
     cms_path = os.path.join(RULES_DIR, code_dir, "cms")
 
@@ -1120,20 +1145,14 @@ def get_cms_rule_status(code: str) -> Dict:
     if not os.path.exists(rule_path):
         return {'has_rule': False}
 
-    try:
-        with open(rule_path, 'r') as f:
-            rule = json.load(f)
-
-        return {
-            'has_rule': True,
-            'version': int(latest[1:]),
-            'created_at': rule.get('generated_at'),
-            'path': rule_path,
-            'sources': rule.get('sources', {}),
-            'stats': rule.get('stats', {})
-        }
-    except:
-        return {'has_rule': False}
+    return {
+        'has_rule': True,
+        'version': int(latest[1:]),
+        'created_at': None,
+        'path': rule_path,
+        'sources': {},
+        'stats': {}
+    }
 
 
 @router.get("/codes/{code}/cms-status")

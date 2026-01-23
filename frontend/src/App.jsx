@@ -289,13 +289,13 @@ const DocumentStats = ({ doc }) => {
   if (hcpcsCount > 0) codeBreakdown.push(`${hcpcsCount} HCPCS`);
 
   return (
-    <div className="mt-2 flex items-center gap-4 text-xs text-gray-500">
+    <div className="mt-2 flex items-center gap-4 text-xs" style={{ color: '#6b7280' }}>
       {codes.length > 0 && (
         <span className="flex items-center gap-1">
           <Hash className="w-3 h-3" />
           <span>Codes ({codes.length})</span>
           {codeBreakdown.length > 0 && (
-            <span className="text-gray-400 ml-1">
+            <span style={{ color: '#9ca3af' }} className="ml-1">
               {codeBreakdown.join(', ')}
             </span>
           )}
@@ -1389,18 +1389,27 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
             <div className="flex items-center gap-2 mb-2">
               <button
                 onClick={() => toggleFolder(folder)}
-                className="flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-gray-900"
+                className="flex items-center gap-2 text-sm font-medium transition-colors"
+                style={{ color: '#1a1a1a' }}
+                onMouseEnter={(e) => e.currentTarget.style.color = '#0090DA'}
+                onMouseLeave={(e) => e.currentTarget.style.color = '#1a1a1a'}
               >
-                {expandedFolders.includes(folder) ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                <Folder className="w-4 h-4 text-gray-400" />
+                <ChevronRight
+                  className="w-4 h-4 transition-transform"
+                  style={{ color: '#9ca3af', transform: expandedFolders.includes(folder) ? 'rotate(90deg)' : 'rotate(0deg)' }}
+                />
+                <Folder className="w-4 h-4" style={{ color: '#9ca3af' }} />
                 {folder}/
-                <span className="text-gray-400 font-normal">({folderDocs.length})</span>
+                <span style={{ color: '#9ca3af', fontWeight: 'normal' }}>({folderDocs.length})</span>
               </button>
 
               {expandedFolders.includes(folder) && (
                 <button
                   onClick={() => toggleSelectAll(folder)}
-                  className="text-xs text-blue-600 hover:text-blue-800 ml-2"
+                  className="text-xs ml-2 transition-colors"
+                  style={{ color: '#0090DA' }}
+                  onMouseEnter={(e) => e.currentTarget.style.color = '#0070aa'}
+                  onMouseLeave={(e) => e.currentTarget.style.color = '#0090DA'}
                 >
                   {allSelected ? 'Deselect all' : `Select all`}
                 </button>
@@ -1420,12 +1429,18 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                   else if (batchStatus === 'done') cardStyle = 'bg-green-50 border-green-200';
                   else if (batchStatus === 'error') cardStyle = 'bg-red-50 border-red-200';
 
+                  // Determine left border color based on status
+                  const borderLeftColor = doc.parsed_at ? '#059669' : '#0090DA';
+
                   return (
                   <div
                     key={doc.id}
-                    className={`border rounded-lg p-3 hover:shadow-md transition-shadow ${cardStyle} ${
-                      selectedDocs.has(doc.id) && !batchStatus ? 'ring-2 ring-blue-500 border-blue-300' : ''
-                    }`}
+                    className="rounded-lg p-3 transition-all"
+                    style={{
+                      background: selectedDocs.has(doc.id) && !batchStatus ? '#f0fdfa' : batchStatus === 'parsing' ? '#eff6ff' : batchStatus === 'done' ? '#f0fdf4' : batchStatus === 'error' ? '#fef2f2' : batchStatus === 'queued' ? '#fffbeb' : 'white',
+                      border: '1px solid #e5e7eb',
+                      borderLeft: `4px solid ${batchStatus === 'error' ? '#dc2626' : batchStatus === 'done' ? '#059669' : batchStatus === 'parsing' ? '#0090DA' : batchStatus === 'queued' ? '#d97706' : borderLeftColor}`
+                    }}
                   >
                     <div className="flex items-start justify-between">
                       <div className="flex items-center gap-2 flex-1">
@@ -1455,9 +1470,9 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                           onClick={() => onDocumentClick(doc.id)}
                         >
                           <DocTypeIcon docType={doc.doc_type} />
-                          <span className="font-medium text-sm">{doc.filename}</span>
+                          <span className="font-medium text-sm" style={{ color: '#1a1a1a' }}>{doc.filename}</span>
                           {doc.payer && (
-                            <span className="px-1.5 py-0.5 bg-orange-100 text-orange-700 rounded text-xs">
+                            <span className="px-1.5 py-0.5 rounded text-xs" style={{ background: '#f3f4f6', color: '#6b7280' }}>
                               {doc.payer}
                             </span>
                           )}
@@ -1489,14 +1504,17 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                               </div>
                             ) : !batchStatus ? (
                               <>
-                                <CheckCircle className="w-4 h-4 text-green-500" />
-                                <span className="text-xs text-gray-500">
+                                <CheckCircle className="w-4 h-4" style={{ color: '#059669' }} />
+                                <span className="text-xs" style={{ color: '#059669' }}>
                                   {doc.total_pages || 0}/{doc.total_pages || 0} pages
                                 </span>
                                 <button
                                   onClick={(e) => handleParse(e, doc.id, true)}
                                   disabled={isGlobalParsing}
-                                  className="px-2 py-1 text-gray-500 text-xs rounded hover:bg-gray-100 disabled:opacity-30 flex items-center gap-1"
+                                  className="px-2 py-1 text-xs rounded-lg flex items-center gap-1 transition-colors disabled:opacity-30"
+                                  style={{ color: '#6b7280', border: '1px solid #d1d5db' }}
+                                  onMouseEnter={(e) => !isGlobalParsing && (e.currentTarget.style.background = '#f3f4f6')}
+                                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                                   title="Reparse document"
                                 >
                                   <RefreshCw className="w-3 h-3" />
@@ -1524,9 +1542,17 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                                 <button
                                   onClick={(e) => handleParse(e, doc.id)}
                                   disabled={isGlobalParsing}
-                                  className="px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 disabled:bg-gray-300 flex items-center gap-1"
+                                  className="px-2.5 py-1 text-xs rounded-lg flex items-center gap-1 font-medium transition-colors"
+                                  style={{
+                                    color: isGlobalParsing ? '#9ca3af' : '#0090DA',
+                                    background: 'transparent',
+                                    border: isGlobalParsing ? '1px solid #d1d5db' : '1px solid #0090DA',
+                                    cursor: isGlobalParsing ? 'not-allowed' : 'pointer'
+                                  }}
+                                  onMouseEnter={(e) => !isGlobalParsing && (e.currentTarget.style.background = '#eff6ff')}
+                                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                                 >
-                                  <Play className="w-3 h-3" />
+                                  <Zap className="w-3 h-3" />
                                   Parse
                                 </button>
                               </>
@@ -1591,7 +1617,8 @@ const UploadZone = ({ onUploadComplete }) => {
       <select
         value={folder}
         onChange={(e) => setFolder(e.target.value)}
-        className="px-3 py-1.5 border rounded text-sm"
+        className="px-3 py-1.5 rounded-lg text-sm"
+        style={{ border: '1px solid #e5e7eb', color: '#374151' }}
         disabled={uploading}
       >
         <option value="guidelines">guidelines/</option>
@@ -1600,9 +1627,17 @@ const UploadZone = ({ onUploadComplete }) => {
         <option value="codebooks">codebooks/</option>
       </select>
 
-      <label className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg cursor-pointer transition-colors ${
-        uploading ? 'bg-gray-100 text-gray-400' : 'bg-blue-600 text-white hover:bg-blue-700'
-      }`}>
+      <label
+        className="inline-flex items-center gap-2 px-4 py-1.5 rounded-lg cursor-pointer transition-colors font-medium text-sm"
+        style={{
+          color: uploading ? '#9ca3af' : '#0090DA',
+          background: 'transparent',
+          border: uploading ? '1px solid #d1d5db' : '2px solid #0090DA',
+          cursor: uploading ? 'not-allowed' : 'pointer'
+        }}
+        onMouseEnter={(e) => !uploading && (e.currentTarget.style.background = '#eff6ff')}
+        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+      >
         {uploading ? (
           <>
             <Loader2 className="w-4 h-4 animate-spin" />
@@ -1889,17 +1924,24 @@ export default function KnowledgeBaseApp() {
         </div>
 
         {/* Documents Section */}
-        <div className="bg-white rounded-lg border">
-          <div className="p-4 border-b flex items-center justify-between">
-            <h2 className="font-semibold flex items-center gap-2">
-              <Database className="w-4 h-4" />
+        <div className="bg-white rounded-lg" style={{ border: '1px solid #e5e7eb' }}>
+          <div className="p-4 flex items-center justify-between" style={{ borderBottom: '1px solid #e5e7eb', background: '#f9fafb' }}>
+            <h2 className="font-semibold flex items-center gap-2" style={{ color: '#1a1a1a' }}>
+              <Database className="w-4 h-4" style={{ color: '#6b7280' }} />
               Documents
             </h2>
             <div className="flex items-center gap-2">
               <button
                 onClick={handleScan}
                 disabled={scanning || parsingAll}
-                className="px-3 py-1.5 bg-green-600 text-white hover:bg-green-700 rounded text-sm flex items-center gap-1 disabled:opacity-50"
+                className="px-3 py-1.5 rounded-lg text-sm flex items-center gap-1.5 font-medium transition-colors disabled:opacity-50"
+                style={{
+                  color: scanning || parsingAll ? '#9ca3af' : '#059669',
+                  background: 'transparent',
+                  border: scanning || parsingAll ? '1px solid #d1d5db' : '1px solid #059669'
+                }}
+                onMouseEnter={(e) => !(scanning || parsingAll) && (e.currentTarget.style.background = '#f0fdf4')}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                 title="Scan folders for PDF files"
               >
                 {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderSearch className="w-4 h-4" />}
@@ -1908,7 +1950,14 @@ export default function KnowledgeBaseApp() {
               <button
                 onClick={handleParseAll}
                 disabled={parsingAll || (selectedDocs.size === 0 && documents.filter(d => !d.parsed_at).length === 0)}
-                className="px-3 py-1.5 bg-blue-600 text-white hover:bg-blue-700 rounded text-sm flex items-center gap-1 disabled:opacity-50"
+                className="px-3 py-1.5 rounded-lg text-sm flex items-center gap-1.5 font-medium transition-colors disabled:opacity-50"
+                style={{
+                  color: parsingAll ? '#9ca3af' : '#0090DA',
+                  background: 'transparent',
+                  border: parsingAll ? '1px solid #d1d5db' : '1px solid #0090DA'
+                }}
+                onMouseEnter={(e) => !parsingAll && (e.currentTarget.style.background = '#eff6ff')}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                 title={selectedDocs.size > 0 ? "Parse selected documents" : "Parse all unparsed documents"}
               >
                 {parsingAll ? (
@@ -1920,12 +1969,12 @@ export default function KnowledgeBaseApp() {
                   </>
                 ) : selectedDocs.size > 0 ? (
                   <>
-                    <Play className="w-4 h-4" />
+                    <Zap className="w-4 h-4" />
                     Parse Selected ({selectedDocs.size})
                   </>
                 ) : (
                   <>
-                    <Play className="w-4 h-4" />
+                    <Zap className="w-4 h-4" />
                     Parse All
                   </>
                 )}
@@ -1933,7 +1982,10 @@ export default function KnowledgeBaseApp() {
               {selectedDocs.size > 0 && !parsingAll && (
                 <button
                   onClick={() => setSelectedDocs(new Set())}
-                  className="px-2 py-1.5 text-gray-600 hover:bg-gray-100 rounded text-sm"
+                  className="px-2 py-1.5 rounded-lg text-sm transition-colors"
+                  style={{ color: '#6b7280' }}
+                  onMouseEnter={(e) => e.currentTarget.style.background = '#f3f4f6'}
+                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                   title="Clear selection"
                 >
                   <X className="w-4 h-4" />
@@ -1942,7 +1994,10 @@ export default function KnowledgeBaseApp() {
               <UploadZone onUploadComplete={refetch} />
               <button
                 onClick={refetch}
-                className="p-2 hover:bg-gray-100 rounded-lg"
+                className="p-2 rounded-lg transition-colors"
+                style={{ color: '#6b7280' }}
+                onMouseEnter={(e) => e.currentTarget.style.background = '#f3f4f6'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                 title="Refresh"
               >
                 <RefreshCw className="w-4 h-4" />
