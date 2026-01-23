@@ -132,14 +132,58 @@ def build_sources_context(
     cursor = conn.cursor()
 
     try:
-        # Get description for the code
-        cursor.execute("""
-            SELECT description FROM document_codes 
-            WHERE code_pattern = ? AND description IS NOT NULL AND description != ''
-            LIMIT 1
-        """, (code,))
-        desc_row = cursor.fetchone()
-        code_description = desc_row[0] if desc_row else ""
+        # Get description for the code from reference tables
+        code_description = ""
+        code_upper = code.upper()
+
+        # Determine code type and get official description
+        if '.' in code_upper:
+            # ICD-10 code (has dot like E11.9) - stored without dots in icd10 table
+            icd_code = code_upper.replace(".", "")
+            cursor.execute(
+                "SELECT description FROM icd10 WHERE code = ?",
+                (icd_code,)
+            )
+            row = cursor.fetchone()
+            if row:
+                code_description = row[0]
+        elif code_upper[0].isdigit():
+            # CPT code (starts with digit like 99213) - check cpt table first
+            cursor.execute(
+                "SELECT description FROM cpt WHERE code = ?",
+                (code_upper,)
+            )
+            row = cursor.fetchone()
+            if row:
+                code_description = row[0] or ""
+            else:
+                # Fallback to hcpcs table (some CPT codes might be there)
+                cursor.execute(
+                    "SELECT long_description, short_description FROM hcpcs WHERE code = ?",
+                    (code_upper,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    code_description = row[0] or row[1] or ""
+        else:
+            # HCPCS Level II code (starts with letter, no dot, like J1950)
+            cursor.execute(
+                "SELECT long_description, short_description FROM hcpcs WHERE code = ?",
+                (code_upper,)
+            )
+            row = cursor.fetchone()
+            if row:
+                code_description = row[0] or row[1] or ""
+
+        # Fallback to document_codes description if not found in reference tables
+        if not code_description:
+            cursor.execute("""
+                SELECT description FROM document_codes
+                WHERE code_pattern = ? AND description IS NOT NULL AND description != ''
+                LIMIT 1
+            """, (code,))
+            desc_row = cursor.fetchone()
+            code_description = desc_row[0] if desc_row else ""
 
         # Build wildcard patterns that would match this code
         # E11.9 → ['E11.9', 'E11.%', 'E1%.%', 'E%']

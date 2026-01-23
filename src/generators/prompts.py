@@ -897,3 +897,318 @@ or
 
 start answer with # ANSWER
 ''')
+
+
+# ---------------------------------------------------------
+# CMS-1500 CLAIM RULES TRANSFORMATION
+# ---------------------------------------------------------
+
+PROMPT_CMS_RULE_TRANSFORM = Template('''
+You are a Claims Validation Rule Transformer. Your task is to convert
+coding guidelines into executable CMS-1500 claim validation rules.
+
+## INPUT DATA
+
+### 1. Code Information
+- **Code**: $code
+- **Code Type**: $code_type
+- **Description**: $description
+
+### 2. Guideline Rule (Source)
+$guideline_rule
+
+### 3. NCCI Edits (from Database)
+$ncci_edits
+
+### 4. CMS-1500 Claim Schema (Available Fields)
+$cms1500_schema
+
+---
+
+## YOUR TASK
+
+Analyze the Guideline Rule and NCCI Edits. For each rule/statement in the guideline:
+
+**STEP 1: Classification**
+
+Determine if the rule can be validated using ONLY the CMS-1500 fields above:
+
+1. **VALIDATABLE** → Can check from CMS-1500 fields
+   Include ALL rules where the condition can be evaluated from claim data:
+
+   **Hard Rules (severity: error)** - Auto-reject if violated:
+   - Code conflicts (mutually exclusive diagnoses)
+   - Diagnosis sequencing errors (wrong primary)
+   - NCCI bundling violations
+   - Unit limits exceeded
+   - Required modifier missing
+   - Age/gender-inappropriate codes
+
+   **Soft Rules (severity: warning)** - Flag for review:
+   - Missing "expected" codes (e.g., E11.x without Z79.x)
+   - Unusual combinations that need verification
+   - Codes that typically appear together
+
+   **Info Rules (severity: info)** - Informational only:
+   - Suggestions based on patterns
+   - Educational notes
+
+2. **NOT VALIDATABLE** → Must remove (explain why)
+   Rules that CANNOT be checked from claim data:
+   - Requires reading medical record text
+   - Requires clinical documentation review
+   - Requires lab/test results
+   - Requires knowing "temporary" vs "long-term" status
+   - Requires provider query or clinical judgment
+   - Requires knowing WHY a code was assigned
+
+**IMPORTANT**: If we CAN detect a condition from claim fields (e.g., "E11.x present but Z79.x missing"),
+it IS validatable - just assign the appropriate severity (warning/info instead of error).
+
+**STEP 2: Rule Conversion**
+
+For VALIDATABLE rules, convert to structured format with:
+- Specific CMS-1500 field paths
+- Clear condition logic
+- Appropriate severity (error, warning, or info) and action (REJECT, WARN, INFO)
+
+**STEP 3: NCCI Integration**
+
+For CPT/HCPCS codes, include NCCI edits:
+- PTP bundling rules (code pairs that conflict)
+- MUE unit limits (max units per day/line)
+
+---
+
+## OUTPUT FORMAT (Markdown)
+
+# CMS-1500 Claim Rules: $code
+
+## SOURCES USED
+- **Guideline Rule**: v{version} from {doc_ids}
+- **NCCI PTP**: {count} bundling edits (or "Not applicable - ICD-10 code")
+- **NCCI MUE**: Max {value} units per {day/line} (or "Not applicable")
+
+## VALIDATABLE RULES
+
+All rules that CAN be checked from CMS-1500 claim data, organized by severity:
+
+### Rule {N}: {Short Descriptive Title}
+- **ID**: {CODE}-{TYPE}-{NNN} (e.g., E11.9-SEQ-001, E11.9-EXPECT-001)
+- **Type**: {diagnosis_conflict | sequencing | expected_code | bundling | unit_limit | age_check | gender_check | modifier_required | pos_required | precert_required}
+- **Severity**: {error | warning | info}
+  - `error` = Auto-reject, definite violation
+  - `warning` = Flag for review, likely issue
+  - `info` = Informational, suggestion only
+- **Field**: {exact path from schema, e.g., diagnosisCodes[].code}
+- **Condition**:
+  ```
+  {condition expression using schema field names}
+  Example: diagnosisCodes contains "E11.9" AND NOT diagnosisCodes contains "Z79.4"
+  ```
+- **Action**: {REJECT | WARN | INFO}
+- **Message**: "{User-facing message explaining the issue or suggestion}"
+- **Source**: Guideline [[doc_id:page | "anchor phrase"]]
+
+(Repeat for ALL validatable rules - errors, warnings, and info)
+
+## REMOVED RULES
+
+These guideline rules CANNOT be validated from CMS-1500 claim data:
+
+| # | Original Guideline Rule | Source | Reason Not Validatable |
+|---|-------------------------|--------|------------------------|
+| 1 | "{exact text from guideline}" | [[doc_id:page]] | {specific reason: e.g., "Requires medical record to determine if type was documented"} |
+| 2 | "{exact text}" | [[doc_id:page]] | {reason} |
+
+## NCCI EDITS
+
+### PTP Bundling Rules (Procedure-to-Procedure)
+
+These codes CANNOT be billed together with $code on the same date of service:
+
+| Bundled Code | Modifier Override | Rationale | Action |
+|--------------|-------------------|-----------|--------|
+| {column2_code} | {Yes/No} | {rationale from DB} | {DENY_LINE / DENY_UNLESS_MODIFIER} |
+
+**Note**: If Modifier Override = Yes, allow if modifier 59/XE/XP/XS/XU present.
+
+### MUE Unit Limit (Medically Unlikely Edits)
+
+- **Max Units**: {mue_value}
+- **Per**: {Line / Date of Service}
+- **Adjudication Indicator**: {1=Line, 2=DOS Policy, 3=DOS Clinical}
+- **Rationale**: {rationale from DB}
+- **Action**: DENY units exceeding {mue_value}
+
+(Or write: "**Not applicable** - $code is an ICD-10 diagnosis code. NCCI edits apply only to CPT/HCPCS procedure codes.")
+
+## VALIDATION LOGIC SUMMARY
+
+```
+WHEN claim contains $code:
+
+  # Validatable Rules
+  1. CHECK {condition} → {action}: "{message}"
+  2. CHECK {condition} → {action}: "{message}"
+  ...
+
+  # NCCI Checks (if CPT/HCPCS)
+  FOR EACH service line with $code:
+    - CHECK units <= {mue_value} → DENY excess
+    - CHECK no bundled codes on same DOS → DENY or check modifier
+
+  # Warnings (informational)
+  - IF {condition} → INFO: "{message}"
+```
+
+## SUMMARY STATISTICS
+- **Total validatable rules**: {count} (by severity: {error_count} errors, {warning_count} warnings, {info_count} info)
+- **Removed (not validatable)**: {count}
+- **NCCI PTP bundling rules**: {count}
+- **NCCI MUE limit**: {Yes/No}
+- **Source coverage**: Guideline + NCCI / Guideline only / NCCI only
+
+---
+start answer with # CMS-1500 Claim Rules
+''')
+
+
+# ---------------------------------------------------------
+# CMS-1500 RULES: MARKDOWN TO JSON TRANSFORMATION
+# ---------------------------------------------------------
+
+PROMPT_CMS_RULE_TO_JSON = Template('''
+You are a structured data extractor. Convert the CMS-1500 claim rules from markdown format into JSON.
+
+## INPUT (Markdown)
+$cms_rule_markdown
+
+---
+
+## OUTPUT FORMAT (JSON)
+
+Extract ALL rules from the markdown and output valid JSON:
+
+```json
+{
+  "code": "{code}",
+  "code_type": "{ICD-10 | CPT | HCPCS}",
+  "version": 1,
+  "generated_at": "{ISO timestamp}",
+
+  "sources": {
+    "guideline": {
+      "used": true,
+      "version": {number or null},
+      "doc_ids": ["{doc_id1}", "{doc_id2}"]
+    },
+    "ncci_ptp": {
+      "used": true,
+      "count": {number}
+    },
+    "ncci_mue": {
+      "used": true,
+      "value": {number},
+      "per": "{line | date_of_service}",
+      "adjudication_indicator": {1 | 2 | 3}
+    }
+  },
+
+  "validatable_rules": [
+    {
+      "id": "{CODE}-{TYPE}-{NNN}",
+      "type": "{diagnosis_conflict | sequencing | expected_code | bundling | unit_limit | age_check | gender_check | modifier_required | pos_required | precert_required}",
+      "severity": "{error | warning | info}",
+      "title": "{Short descriptive title}",
+      "field": "{schema field path}",
+      "condition": {
+        "operator": "{AND | OR | NOT}",
+        "checks": [
+          {
+            "field": "{field path}",
+            "op": "{contains | not_contains | contains_pattern | equals | not_equals | greater_than | less_than | position_before | same_dos}",
+            "value": "{value or pattern}"
+          }
+        ]
+      },
+      "action": "{REJECT | WARN | INFO}",
+      "message": "{user-facing message}",
+      "source": {
+        "type": "{guideline | ncci_ptp | ncci_mue}",
+        "citation": "{[[doc_id:page | anchor]] or null}"
+      }
+    }
+  ],
+
+  "removed_rules": [
+    {
+      "original_text": "{exact text from guideline}",
+      "source_citation": "{[[doc_id:page]] or null}",
+      "reason": "{why not validatable}"
+    }
+  ],
+
+  "ncci_edits": {
+    "ptp": [
+      {
+        "bundled_code": "{code}",
+        "modifier_override": {true | false},
+        "rationale": "{rationale}",
+        "action": "{DENY_LINE | DENY_UNLESS_MODIFIER}"
+      }
+    ],
+    "mue": {
+      "max_units": {number},
+      "per": "{line | date_of_service}",
+      "adjudication_indicator": {1 | 2 | 3},
+      "rationale": "{rationale}",
+      "action": "DENY_EXCESS_UNITS"
+    }
+  },
+
+  "stats": {
+    "validatable_count": {total number of validatable rules},
+    "error_count": {rules with severity=error},
+    "warning_count": {rules with severity=warning},
+    "info_count": {rules with severity=info},
+    "removed_count": {number},
+    "ncci_ptp_count": {number},
+    "ncci_mue_applied": {true | false}
+  }
+}
+```
+
+## EXTRACTION RULES
+
+1. **Extract ALL rules** from VALIDATABLE RULES section (includes error, warning, and info severity)
+2. **Extract ALL rows** from REMOVED RULES table
+3. **Count rules by severity** for stats: error_count, warning_count, info_count
+4. **Extract ALL rows** from NCCI PTP table (if present)
+5. **Extract MUE data** if present
+
+**Condition Operators:**
+- `contains` - field array contains value
+- `not_contains` - field array does not contain value
+- `contains_pattern` - field matches pattern (% = wildcard)
+- `equals` - exact match
+- `not_equals` - not exact match
+- `greater_than` - numeric comparison
+- `less_than` - numeric comparison
+- `position_before` - array position comparison
+- `same_dos` - same date of service
+
+**Parse condition text into structured format:**
+- "diagnosisCodes contains E11.9" → `{"field": "diagnosisCodes[].code", "op": "contains", "value": "E11.9"}`
+- "units > 2" → `{"field": "serviceLines[].procedureCode.units", "op": "greater_than", "value": 2}`
+- "E11.9 appears before O24" → `{"field": "diagnosisCodes", "op": "position_before", "value": ["E11.9", "O24"]}`
+
+## IMPORTANT
+
+- Output ONLY valid JSON, no markdown wrapping
+- Use `null` for missing optional fields
+- Preserve exact citation format [[doc_id:page | "anchor"]]
+- If NCCI not applicable, set `ncci_edits.ptp` to empty array `[]` and `ncci_edits.mue` to `null`
+
+start answer with {
+''')

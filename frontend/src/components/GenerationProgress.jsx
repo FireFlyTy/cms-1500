@@ -427,7 +427,7 @@ const GenerationProgress = ({ isOpen, codes = [], progress = {}, onClose, genera
         {/* Header */}
         <div className="p-4 border-b flex items-center justify-between bg-gray-50">
           <div>
-            <h3 className="font-semibold text-lg">Rule Generation Pipeline</h3>
+            <h3 className="font-semibold text-lg">Guideline Rules Pipeline</h3>
             <p className="text-sm text-gray-500">
               {generating ? 'Processing...' : 'Complete'} • {completedCount}/{codes.length} done
               {errorCount > 0 && <span className="text-red-500 ml-2">• {errorCount} errors</span>}

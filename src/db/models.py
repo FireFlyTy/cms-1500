@@ -66,6 +66,17 @@ CREATE TABLE IF NOT EXISTS icd10 (
 
 CREATE INDEX IF NOT EXISTS idx_icd10_code ON icd10(code);
 
+-- CPT codes (procedure codes)
+CREATE TABLE IF NOT EXISTS cpt (
+    code TEXT PRIMARY KEY,
+    description TEXT,
+    category TEXT,              -- Procedure category (AAA, AMP, etc.)
+    status TEXT                 -- Code status (No change, New, etc.)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cpt_code ON cpt(code);
+CREATE INDEX IF NOT EXISTS idx_cpt_category ON cpt(category);
+
 -- Documents metadata
 CREATE TABLE IF NOT EXISTS documents (
     id TEXT PRIMARY KEY,              -- file hash

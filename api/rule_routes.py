@@ -33,6 +33,7 @@ from src.db.connection import get_db_connection
 from src.generators import (
     build_sources_context,
     RuleGenerator,
+    CMSRuleGenerator,
 )
 
 router = APIRouter(prefix="/api/rules", tags=["rules"])
@@ -60,6 +61,12 @@ class GenerateRuleRequest(BaseModel):
 class BatchGenerateRequest(BaseModel):
     codes: List[str]
     code_type: str = "ICD-10"
+
+
+class GenerateCMSRuleRequest(BaseModel):
+    code: str = ""
+    code_type: Optional[str] = None  # Auto-detect if not provided
+    thinking_budget: int = 8000
 
 
 # ============================================================
@@ -978,3 +985,208 @@ async def get_rules_stats():
         'mock': mock_count,
         'real': real_count
     }
+
+
+# ============================================================
+# CMS-1500 CLAIM RULES ENDPOINTS
+# ============================================================
+
+def get_cms_rule_status(code: str) -> Dict:
+    """
+    Проверяет статус CMS правила для кода.
+
+    Returns:
+        {
+            'has_rule': bool,
+            'version': int,
+            'created_at': str,
+            'path': str,
+            'sources': {...}
+        }
+    """
+    code_dir = code.replace(".", "_").replace("/", "_")
+    cms_path = os.path.join(RULES_DIR, code_dir, "cms")
+
+    if not os.path.exists(cms_path):
+        return {'has_rule': False}
+
+    versions = [d for d in os.listdir(cms_path) if d.startswith('v') and d[1:].isdigit()]
+    if not versions:
+        return {'has_rule': False}
+
+    latest = sorted(versions, key=lambda x: int(x[1:]))[-1]
+    rule_path = os.path.join(cms_path, latest, "cms_rule.json")
+
+    if not os.path.exists(rule_path):
+        return {'has_rule': False}
+
+    try:
+        with open(rule_path, 'r') as f:
+            rule = json.load(f)
+
+        return {
+            'has_rule': True,
+            'version': int(latest[1:]),
+            'created_at': rule.get('generated_at'),
+            'path': rule_path,
+            'sources': rule.get('sources', {}),
+            'stats': rule.get('stats', {})
+        }
+    except:
+        return {'has_rule': False}
+
+
+@router.get("/codes/{code}/cms-status")
+async def get_code_cms_status(code: str):
+    """
+    Получает статус CMS правила для кода.
+    """
+    status = get_cms_rule_status(code)
+    guideline_status = get_rule_status(code)
+
+    return {
+        'code': code,
+        'cms_rule': status,
+        'guideline_rule': {
+            'has_rule': guideline_status['has_rule'],
+            'version': guideline_status.get('version'),
+            'is_inherited': guideline_status.get('is_inherited', False)
+        }
+    }
+
+
+@router.get("/codes/{code}/cms-rule")
+async def get_code_cms_rule(code: str, version: Optional[int] = None):
+    """
+    Получает CMS правило для кода.
+
+    Args:
+        code: Код (E11.9, 99213, G0101)
+        version: Версия правила (по умолчанию - последняя)
+    """
+    code_dir = code.replace(".", "_").replace("/", "_")
+    cms_path = os.path.join(RULES_DIR, code_dir, "cms")
+
+    if not os.path.exists(cms_path):
+        raise HTTPException(status_code=404, detail=f"No CMS rule found for code '{code}'")
+
+    versions = [d for d in os.listdir(cms_path) if d.startswith('v') and d[1:].isdigit()]
+    if not versions:
+        raise HTTPException(status_code=404, detail=f"No CMS rule versions found for code '{code}'")
+
+    if version:
+        target_version = f"v{version}"
+        if target_version not in versions:
+            raise HTTPException(status_code=404, detail=f"Version {version} not found for code '{code}'")
+    else:
+        target_version = sorted(versions, key=lambda x: int(x[1:]))[-1]
+
+    # Load JSON rule
+    json_path = os.path.join(cms_path, target_version, "cms_rule.json")
+    md_path = os.path.join(cms_path, target_version, "cms_rule.md")
+
+    if not os.path.exists(json_path):
+        raise HTTPException(status_code=404, detail=f"CMS rule JSON not found for {code} {target_version}")
+
+    with open(json_path, 'r', encoding='utf-8') as f:
+        rule_json = json.load(f)
+
+    # Load markdown
+    rule_md = None
+    if os.path.exists(md_path):
+        with open(md_path, 'r', encoding='utf-8') as f:
+            rule_md = f.read()
+
+    return {
+        'code': code,
+        'version': int(target_version[1:]),
+        'available_versions': sorted([int(v[1:]) for v in versions]),
+        'rule': rule_json,
+        'markdown': rule_md
+    }
+
+
+@router.get("/codes/{code}/cms-generation-log")
+async def get_cms_generation_log(code: str, version: Optional[int] = None):
+    """
+    Получает лог генерации CMS правила.
+    """
+    code_dir = code.replace(".", "_").replace("/", "_")
+    cms_path = os.path.join(RULES_DIR, code_dir, "cms")
+
+    if not os.path.exists(cms_path):
+        raise HTTPException(status_code=404, detail=f"No CMS rule found for code '{code}'")
+
+    versions = [d for d in os.listdir(cms_path) if d.startswith('v') and d[1:].isdigit()]
+    if not versions:
+        raise HTTPException(status_code=404, detail=f"No versions found for code '{code}'")
+
+    if version:
+        target_version = f"v{version}"
+    else:
+        target_version = sorted(versions, key=lambda x: int(x[1:]))[-1]
+
+    log_path = os.path.join(cms_path, target_version, "generation_log.json")
+
+    if not os.path.exists(log_path):
+        raise HTTPException(status_code=404, detail=f"Generation log not found for {code} {target_version}")
+
+    with open(log_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+@router.post("/generate-cms/{code}")
+async def generate_cms_rule_endpoint(code: str, request: GenerateCMSRuleRequest):
+    """
+    Генерирует CMS-1500 claim validation правило для кода.
+
+    Pipeline:
+    1. Load guideline rule (if exists)
+    2. Fetch NCCI edits (for CPT/HCPCS)
+    3. Transform to CMS rules (Markdown)
+    4. Parse to structured JSON
+
+    SSE Event Format:
+    {
+        "step": "transform|parse|pipeline",
+        "type": "status|thought|content|done|error",
+        "content": "...",
+        "full_text": "...",  // on done
+        "duration_ms": 15000  // on done
+    }
+    """
+    async def event_stream():
+        generator = CMSRuleGenerator(thinking_budget=request.thinking_budget)
+
+        async for event in generator.stream_pipeline(
+            code=code,
+            code_type=request.code_type
+        ):
+            yield f"data: {event}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@router.delete("/codes/{code}/cms-rule")
+async def delete_cms_rule(code: str):
+    """
+    Удаляет CMS правило для кода.
+    """
+    code_dir = code.replace(".", "_").replace("/", "_")
+    cms_path = os.path.join(RULES_DIR, code_dir, "cms")
+
+    if not os.path.exists(cms_path):
+        raise HTTPException(status_code=404, detail=f"No CMS rule found for code '{code}'")
+
+    import shutil
+    shutil.rmtree(cms_path)
+
+    return {'status': 'deleted', 'code': code, 'type': 'cms_rule'}

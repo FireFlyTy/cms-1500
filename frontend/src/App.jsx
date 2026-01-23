@@ -7,6 +7,7 @@ import {
   Zap, Shield
 } from 'lucide-react';
 import RuleGeneration from './components/RuleGeneration';
+import ClaimRules from './components/ClaimRules';
 import PdfViewer from './components/PdfViewer';
 
 // API base URL
@@ -1633,7 +1634,7 @@ export default function KnowledgeBaseApp() {
   const { documents, loading, refetch } = useDocuments();
   const stats = useStats();
 
-  const [activeTab, setActiveTab] = useState('kb'); // 'kb' | 'rules'
+  const [activeTab, setActiveTab] = useState('kb'); // 'kb' | 'rules' | 'cms'
   const [selectedDocId, setSelectedDocId] = useState(null);
   const [initialPage, setInitialPage] = useState(null);
   const [highlightCode, setHighlightCode] = useState(null);
@@ -1784,7 +1785,7 @@ export default function KnowledgeBaseApp() {
           <div className="flex items-center justify-between py-4">
             <div>
               <h1 className="text-xl font-bold text-gray-900">CMS-1500 Rule Builder</h1>
-              <p className="text-sm text-gray-500">Knowledge Base & Rule Generation</p>
+              <p className="text-sm text-gray-500">Knowledge Base & Rules</p>
             </div>
           </div>
 
@@ -1813,7 +1814,20 @@ export default function KnowledgeBaseApp() {
             >
               <span className="flex items-center gap-2">
                 <Zap className="w-4 h-4" />
-                Rule Generation
+                Guideline Rules
+              </span>
+            </button>
+            <button
+              onClick={() => setActiveTab('cms')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === 'cms'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <Shield className="w-4 h-4" />
+                Claim Rules
               </span>
             </button>
           </div>
@@ -1964,10 +1978,16 @@ export default function KnowledgeBaseApp() {
           </div>
         </div>
       </main>
-      ) : (
+      ) : activeTab === 'rules' ? (
         <main className="max-w-7xl mx-auto px-4 py-6">
           <div className="bg-white rounded-lg border h-[calc(100vh-180px)]">
             <RuleGeneration />
+          </div>
+        </main>
+      ) : (
+        <main className="max-w-7xl mx-auto px-4 py-6">
+          <div className="bg-white rounded-lg border h-[calc(100vh-180px)]">
+            <ClaimRules />
           </div>
         </main>
       )}

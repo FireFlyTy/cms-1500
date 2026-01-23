@@ -74,7 +74,7 @@ const CategoryList = ({ categories, selectedCategory, onSelectCategory, loading 
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+        <Loader2 className="w-6 h-6 animate-spin text-teal-600" />
       </div>
     );
   }
@@ -89,47 +89,67 @@ const CategoryList = ({ categories, selectedCategory, onSelectCategory, loading 
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
       {categories.map(cat => {
         const isSelected = selectedCategory === cat.name;
-        const coveragePercent = cat.coverage_percent || 0;
+        const codesWithRules = cat.codes_with_rules || 0;
+        const totalCodes = cat.total_codes || 0;
+        const coveragePercent = totalCodes > 0 ? Math.round((codesWithRules / totalCodes) * 100) : 0;
 
         return (
           <button
             key={cat.name}
             onClick={() => onSelectCategory(cat.name)}
-            className={`w-full text-left p-3 rounded-lg border transition-all ${
-              isSelected 
-                ? 'bg-blue-50 border-blue-300 ring-2 ring-blue-200' 
-                : 'bg-white hover:bg-gray-50 border-gray-200'
-            }`}
+            className="w-full text-left p-3 rounded-lg transition-all"
+            style={{
+              background: isSelected ? '#eef4fa' : 'white',
+              border: '1px solid',
+              borderColor: isSelected ? '#5d8bb8' : '#e5e7eb',
+              borderLeft: isSelected ? '4px solid #5d8bb8' : '4px solid transparent'
+            }}
+            onMouseEnter={(e) => {
+              if (!isSelected) {
+                e.currentTarget.style.background = '#f9fafb';
+                e.currentTarget.style.borderLeftColor = '#9cb8d4';
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (!isSelected) {
+                e.currentTarget.style.background = 'white';
+                e.currentTarget.style.borderLeftColor = 'transparent';
+              }
+            }}
           >
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div
-                  className="w-3 h-3 rounded-full"
-                  style={{ backgroundColor: cat.color || '#6B7280' }}
-                />
-                <span className="font-medium text-sm">{cat.name}</span>
-              </div>
-              <ChevronRight className={`w-4 h-4 text-gray-400 transition-transform ${isSelected ? 'rotate-90' : ''}`} />
+              <span className="font-medium text-xs uppercase tracking-wide" style={{ color: '#1a1a1a' }}>{cat.name}</span>
+              <ChevronRight
+                className="w-4 h-4 transition-transform"
+                style={{
+                  color: '#9ca3af',
+                  transform: isSelected ? 'rotate(90deg)' : 'rotate(0deg)'
+                }}
+              />
             </div>
 
-            <div className="mt-2 flex items-center gap-3">
-              <span className="text-xs text-gray-500">
-                {cat.total_codes} codes
-              </span>
-              <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+            {/* Coverage progress bar */}
+            <div className="mt-2 flex items-center gap-2">
+              <div
+                className="flex-1 h-1.5 rounded-full overflow-hidden"
+                style={{ background: '#e5e7eb' }}
+              >
                 <div
-                  className="h-full transition-all"
+                  className="h-full rounded-full transition-all"
                   style={{
                     width: `${coveragePercent}%`,
-                    backgroundColor: coveragePercent === 100 ? '#10B981' : coveragePercent > 50 ? '#F59E0B' : '#6B7280'
+                    background: coveragePercent === 100 ? '#4878a8' : coveragePercent > 0 ? '#5d8bb8' : '#e5e7eb'
                   }}
                 />
               </div>
-              <span className="text-xs font-mono text-gray-500">
-                {cat.codes_with_rules}/{cat.total_codes}
+              <span
+                className="text-xs font-mono"
+                style={{ color: '#6b7280', minWidth: '45px', textAlign: 'right' }}
+              >
+                {codesWithRules}/{totalCodes}
               </span>
             </div>
           </button>
@@ -143,7 +163,7 @@ const CategoryList = ({ categories, selectedCategory, onSelectCategory, loading 
 // CODE ITEM
 // =============================================================================
 
-const CodeItem = ({ code, isSelected, canSelect, generating, onToggleCode, onDeleteRule, onViewRule }) => {
+const CodeItem = ({ code, isSelected, canSelect, generating, onToggleCode, onDeleteRule, onViewRule, onGenerate }) => {
   const hasRule = code.rule_status?.has_rule;
   const isMock = code.rule_status?.is_mock;
   const isInheritedRule = code.rule_status?.is_inherited;
@@ -153,12 +173,12 @@ const CodeItem = ({ code, isSelected, canSelect, generating, onToggleCode, onDel
   // Code type flags
   const isWildcard = code.is_wildcard || code.code?.includes('%');
   const isRange = code.is_range || code.code?.includes(':');
-  const isPattern = isWildcard || isRange;
 
   // Document counts
   const ownDocs = code.documents?.length || 0;
   const inheritedDocs = code.inherited_documents?.length || 0;
   const totalDocs = code.total_docs || ownDocs + inheritedDocs;
+  const hasSources = totalDocs > 0;
 
   const handleDelete = async (e) => {
     e.stopPropagation();
@@ -177,111 +197,169 @@ const CodeItem = ({ code, isSelected, canSelect, generating, onToggleCode, onDel
     if (onViewRule) onViewRule(code.code);
   };
 
+  // Left border color based on status
+  const borderLeftColor = hasRule && !isMock ? '#059669' : hasSources ? '#0090DA' : '#d1d5db';
+
   return (
     <div
-      className={`p-3 rounded-lg border transition-all ${
-        isSelected 
-          ? 'bg-blue-50 border-blue-300' 
-          : isPattern
-            ? 'bg-purple-50 border-purple-200 hover:border-purple-300'
-            : hasRule && !isMock
-              ? 'bg-green-50 border-green-200 hover:border-green-300 cursor-pointer' 
-              : hasRule && isMock
-                ? 'bg-yellow-50 border-yellow-200'
-                : 'bg-white border-gray-200 hover:border-gray-300'
-      }`}
-      onClick={hasRule && !isMock ? handleView : undefined}
+      className="rounded-lg transition-all"
+      style={{
+        background: isSelected ? '#f0fdfa' : 'white',
+        border: '1px solid #e5e7eb',
+        borderLeft: `4px solid ${borderLeftColor}`
+      }}
     >
-      <div className="flex items-center gap-3">
-        {canSelect && (
+      <div className="flex items-center gap-3 p-3">
+        {/* Checkbox for all codes with sources */}
+        {canSelect && hasSources ? (
           <input
             type="checkbox"
             checked={isSelected}
             onChange={() => onToggleCode(code.code)}
             disabled={generating}
-            className="w-4 h-4 text-blue-600 rounded"
+            className="w-4 h-4 text-teal-600 rounded"
             onClick={(e) => e.stopPropagation()}
           />
-        )}
+        ) : canSelect ? (
+          <div className="w-4 h-4" />
+        ) : null}
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="font-mono font-medium text-sm">{code.code}</span>
-            <span className="text-xs px-1.5 py-0.5 bg-gray-100 rounded text-gray-500">
+            <span className="font-mono font-medium text-sm" style={{ color: '#1a1a1a' }}>{code.code}</span>
+            <span
+              className="text-xs px-1.5 py-0.5 rounded"
+              style={{ background: '#f3f4f6', color: '#6b7280' }}
+            >
               {code.type || 'ICD-10'}
             </span>
             {isWildcard && (
-              <span className="text-xs px-1.5 py-0.5 bg-purple-100 rounded text-purple-600" title="Wildcard pattern - applies to all matching codes">
+              <span
+                className="text-xs px-1.5 py-0.5 rounded"
+                style={{ background: '#f3f4f6', color: '#6b7280' }}
+                title="Wildcard pattern"
+              >
                 wildcard
               </span>
             )}
             {isRange && (
-              <span className="text-xs px-1.5 py-0.5 bg-indigo-100 rounded text-indigo-600" title="Range pattern - applies to codes in range">
+              <span
+                className="text-xs px-1.5 py-0.5 rounded"
+                style={{ background: '#f3f4f6', color: '#6b7280' }}
+                title="Range pattern"
+              >
                 range
               </span>
             )}
           </div>
 
-          <div className="mt-1 flex items-center gap-3 text-xs text-gray-500">
-            <span className="flex items-center gap-1" title={`${ownDocs} own docs`}>
+          <div className="mt-1.5 flex items-center gap-3 text-xs">
+            <span className="flex items-center gap-1" style={{ color: ownDocs > 0 ? '#0090DA' : '#9ca3af' }}>
               <FileText className="w-3 h-3" />
               {ownDocs} docs
+              {ownDocs > 0 && <CheckCircle className="w-3 h-3" style={{ color: '#059669' }} />}
             </span>
             {inheritedDocs > 0 && (
-              <span className="flex items-center gap-1 text-purple-500" title={`${inheritedDocs} inherited from parent patterns`}>
+              <span className="flex items-center gap-1" style={{ color: '#7c3aed' }}>
                 +{inheritedDocs} inherited
               </span>
             )}
-            <span className="text-gray-400">= {totalDocs} total</span>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {hasRule ? (
-            isMock ? (
-              <div className="flex items-center gap-1 text-yellow-600">
-                <Clock className="w-4 h-4" />
-                <span className="text-xs">mock v{code.rule_status.version}</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleView}
-                  className="p-1.5 text-green-600 hover:bg-green-100 rounded transition-colors"
-                  title="View rule"
+        {/* Action zone - right side */}
+        <div className="flex items-center gap-2 shrink-0">
+          {hasRule && !isMock ? (
+            <>
+              <button
+                onClick={handleView}
+                className="px-3 py-1.5 text-xs rounded flex items-center gap-1.5 transition-colors"
+                style={{
+                  color: '#059669',
+                  background: 'transparent',
+                  border: '1px solid #059669'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = '#f0fdf4'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                title="View rule"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                View
+              </button>
+              <span
+                className="text-xs font-medium px-2 py-1 rounded"
+                style={{ background: '#f0fdf4', color: '#059669' }}
+              >
+                v{code.rule_status.version}
+              </span>
+              {isInheritedRule && matchedPattern && (
+                <span
+                  className="text-xs px-1.5 py-0.5 rounded"
+                  style={{ background: '#f3f4f6', color: '#7c3aed' }}
+                  title={`Inherited from ${matchedPattern}`}
                 >
-                  <Eye className="w-4 h-4" />
-                </button>
-                <div className="flex flex-col items-end">
-                  <div className="flex items-center gap-1 text-green-600">
-                    <CheckCircle className="w-4 h-4" />
-                    <span className="text-xs">v{code.rule_status.version}</span>
-                  </div>
-                  {isInheritedRule && matchedPattern && (
-                    <span className="text-xs text-purple-500" title={`Rule inherited from ${matchedPattern}`}>
-                      via {matchedPattern}
-                    </span>
-                  )}
-                </div>
-                <button
-                  onClick={handleDelete}
-                  disabled={deleting}
-                  className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
-                  title="Delete rule"
-                >
-                  {deleting ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <X className="w-3 h-3" />
-                  )}
-                </button>
-              </div>
-            )
+                  via {matchedPattern}
+                </span>
+              )}
+              {/* Regenerate button */}
+              <button
+                onClick={(e) => { e.stopPropagation(); onGenerate?.(code.code); }}
+                disabled={generating}
+                className="px-2 py-1.5 text-xs rounded flex items-center gap-1 transition-colors"
+                style={{
+                  color: generating ? '#9ca3af' : '#6b7280',
+                  background: 'transparent',
+                  border: '1px solid #d1d5db',
+                  cursor: generating ? 'not-allowed' : 'pointer'
+                }}
+                onMouseEnter={(e) => !generating && (e.currentTarget.style.background = '#f3f4f6')}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                title="Regenerate rule"
+              >
+                <RefreshCw className="w-3 h-3" />
+              </button>
+              {/* Delete button */}
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="px-2 py-1.5 text-xs rounded flex items-center gap-1 transition-colors"
+                style={{
+                  color: deleting ? '#9ca3af' : '#6b7280',
+                  background: 'transparent',
+                  border: '1px solid #d1d5db',
+                  cursor: deleting ? 'not-allowed' : 'pointer'
+                }}
+                onMouseEnter={(e) => !deleting && (e.currentTarget.style.background = '#fef2f2', e.currentTarget.style.color = '#dc2626', e.currentTarget.style.borderColor = '#fecaca')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent', e.currentTarget.style.color = '#6b7280', e.currentTarget.style.borderColor = '#d1d5db')}
+                title="Delete rule"
+              >
+                {deleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+              </button>
+            </>
+          ) : hasRule && isMock ? (
+            <span className="text-xs px-2 py-1 rounded" style={{ background: '#fef3c7', color: '#d97706' }}>
+              mock v{code.rule_status.version}
+            </span>
+          ) : hasSources ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); onGenerate?.(code.code); }}
+              disabled={generating}
+              className="px-3 py-1.5 text-xs rounded flex items-center gap-1.5 transition-colors"
+              style={{
+                color: generating ? '#9ca3af' : '#0090DA',
+                background: 'transparent',
+                border: generating ? '1px solid #d1d5db' : '1px solid #0090DA',
+                cursor: generating ? 'not-allowed' : 'pointer'
+              }}
+              onMouseEnter={(e) => !generating && (e.currentTarget.style.background = '#eff6ff')}
+              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+              title="Generate rule"
+            >
+              <Zap className="w-3.5 h-3.5" />
+              Generate
+            </button>
           ) : (
-            <div className="flex items-center gap-1 text-gray-400">
-              <Clock className="w-4 h-4" />
-              <span className="text-xs">No rule</span>
-            </div>
+            <span className="text-xs" style={{ color: '#9ca3af' }}>No sources</span>
           )}
         </div>
       </div>
@@ -999,7 +1077,6 @@ const RuleViewer = ({ code, onClose }) => {
 
 const CodeList = ({
   categoryName,
-  categoryColor,
   diagnoses = [],
   procedures = [],
   loading,
@@ -1007,14 +1084,20 @@ const CodeList = ({
   onToggleCode,
   onSelectAll,
   onGenerate,
+  onGenerateSingle,
   onDeleteRule,
   onViewRule,
   generating
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [showRules, setShowRules] = useState(true);
-  const [showDiagnoses, setShowDiagnoses] = useState(true);
-  const [showProcedures, setShowProcedures] = useState(true);
+  const [expandedSections, setExpandedSections] = useState({
+    generated: true,
+    ready: true
+  });
+
+  const toggleSection = (section) => {
+    setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
+  };
 
   const filterCodes = (codes) => codes.filter(c => {
     const matchesSearch = c.code.toLowerCase().includes(searchQuery.toLowerCase());
@@ -1030,33 +1113,89 @@ const CodeList = ({
   const proceduresWithRules = filteredProcedures.filter(c => c.rule_status?.has_rule);
   const proceduresWithoutRules = filteredProcedures.filter(c => !c.rule_status?.has_rule);
 
-  const allWithRules = [...diagnosesWithRules, ...proceduresWithRules];
+  const generatedCodes = [...diagnosesWithRules, ...proceduresWithRules];
+  const readyToGenerate = [...diagnosesWithoutRules, ...proceduresWithoutRules];
   const allFiltered = [...filteredDiagnoses, ...filteredProcedures];
 
-  const selectableCodes = allFiltered; // All codes can be selected (regeneration allowed)
+  // All codes with docs can be selected (for generation or regeneration)
+  const selectableCodes = allFiltered.filter(c => (c.documents?.length || 0) + (c.inherited_documents?.length || 0) > 0);
   const allSelected = selectableCodes.length > 0 &&
     selectableCodes.every(c => selectedCodes.has(c.code));
 
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+        <Loader2 className="w-6 h-6 animate-spin text-teal-600" />
       </div>
     );
   }
 
+  // Section component (matching ClaimRules)
+  const Section = ({ id, icon, title, count, color, children }) => {
+    const isExpanded = expandedSections[id];
+    if (count === 0) return null;
+
+    return (
+      <div className="border rounded-lg overflow-hidden" style={{ borderColor: '#e5e7eb' }}>
+        <button
+          onClick={() => toggleSection(id)}
+          className="w-full flex items-center gap-3 px-4 py-3 transition-colors hover:bg-gray-50"
+          style={{ background: 'white' }}
+        >
+          <span style={{ color }}>{icon}</span>
+          <span className="font-medium text-sm" style={{ color: '#1a1a1a' }}>{title}</span>
+          <span
+            className="text-xs font-semibold px-2 py-0.5 rounded-full"
+            style={{ background: color, color: 'white' }}
+          >
+            {count}
+          </span>
+          <div className="flex-1" />
+          <ChevronRight
+            className="w-4 h-4 transition-transform"
+            style={{ color: '#9ca3af', transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
+          />
+        </button>
+        {isExpanded && <div className="border-t" style={{ borderColor: '#e5e7eb' }}>{children}</div>}
+      </div>
+    );
+  };
+
+  // SubSection for diagnoses/procedures
+  const SubSection = ({ label, codes }) => {
+    if (codes.length === 0) return null;
+    return (
+      <div className="p-3">
+        <div className="text-[10px] font-semibold uppercase px-1 pb-2" style={{ color: '#6b7280' }}>
+          {label} ({codes.length})
+        </div>
+        <div className="space-y-1.5">
+          {codes.map(code => (
+            <CodeItem
+              key={code.code}
+              code={code}
+              isSelected={selectedCodes.has(code.code)}
+              canSelect={true}
+              generating={generating}
+              onToggleCode={onToggleCode}
+              onDeleteRule={onDeleteRule}
+              onViewRule={onViewRule}
+              onGenerate={onGenerateSingle}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="p-4 border-b bg-gray-50">
+      <div className="p-4 border-b" style={{ background: '#f9fafb' }}>
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <div
-              className="w-3 h-3 rounded-full"
-              style={{ backgroundColor: categoryColor || '#6B7280' }}
-            />
-            <h3 className="font-semibold text-gray-900">{categoryName}</h3>
-            <span className="text-sm text-gray-500">
+            <h3 className="font-semibold" style={{ color: '#1a1a1a' }}>{categoryName}</h3>
+            <span className="text-sm" style={{ color: '#6b7280' }}>
               {diagnoses.length} dx · {procedures.length} proc
             </span>
           </div>
@@ -1065,7 +1204,14 @@ const CodeList = ({
               <button
                 onClick={onGenerate}
                 disabled={generating}
-                className="px-3 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 disabled:bg-gray-300 flex items-center gap-1"
+                className="px-4 py-2 text-sm rounded-lg flex items-center gap-1.5 font-medium transition-colors"
+                style={{
+                  color: generating ? '#9ca3af' : '#0090DA',
+                  background: generating ? '#f9fafb' : 'transparent',
+                  border: generating ? '1px solid #d1d5db' : '2px solid #0090DA'
+                }}
+                onMouseEnter={(e) => !generating && (e.currentTarget.style.background = '#eff6ff')}
+                onMouseLeave={(e) => e.currentTarget.style.background = generating ? '#f9fafb' : 'transparent'}
               >
                 {generating ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
@@ -1087,175 +1233,54 @@ const CodeList = ({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-9 pr-3 py-2 border rounded-lg text-sm"
+              style={{ borderColor: '#e5e7eb' }}
             />
           </div>
 
           {selectableCodes.length > 0 && (
             <button
               onClick={() => onSelectAll(selectableCodes.map(c => c.code))}
-              className="px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 rounded-lg whitespace-nowrap"
+              className="px-3 py-2 text-sm rounded-lg whitespace-nowrap"
+              style={{ color: '#0090DA', background: 'transparent' }}
             >
-              {allSelected ? 'Deselect' : 'Select'} ({selectableCodes.length})
+              {allSelected ? 'Deselect all' : 'Select all'} ({selectableCodes.length})
             </button>
           )}
         </div>
       </div>
 
-      {/* Code lists */}
-      <div className="flex-1 overflow-auto p-2">
+      {/* Code sections */}
+      <div className="flex-1 overflow-auto p-3 space-y-3">
         {allFiltered.length === 0 ? (
-          <div className="text-center py-12 text-gray-400">
+          <div className="text-center py-12" style={{ color: '#9ca3af' }}>
             No codes found
           </div>
         ) : (
-          <div className="space-y-2">
-            {/* RULES Section - Codes with generated rules (at the top) */}
-            {allWithRules.length > 0 && (
-              <div className="border border-green-200 rounded-lg overflow-hidden bg-green-50/30">
-                <button
-                  onClick={() => setShowRules(!showRules)}
-                  className="w-full flex items-center gap-2 px-3 py-2 bg-green-100 hover:bg-green-200 transition-colors"
-                >
-                  {showRules ? (
-                    <ChevronDown className="w-4 h-4 text-green-600" />
-                  ) : (
-                    <ChevronRight className="w-4 h-4 text-green-600" />
-                  )}
-                  <CheckCircle className="w-4 h-4 text-green-600" />
-                  <span className="text-xs font-semibold text-green-800 uppercase">
-                    Rules
-                  </span>
-                  <span className="text-xs text-green-600">
-                    ({allWithRules.length})
-                  </span>
-                </button>
-                {showRules && (
-                  <div className="p-2 space-y-2">
-                    {/* Diagnoses with rules */}
-                    {diagnosesWithRules.length > 0 && (
-                      <div>
-                        <div className="text-[10px] font-semibold text-gray-500 uppercase px-2 py-1">
-                          Diagnoses ({diagnosesWithRules.length})
-                        </div>
-                        <div className="space-y-1">
-                          {diagnosesWithRules.map(code => (
-                            <CodeItem
-                              key={code.code}
-                              code={code}
-                              isSelected={selectedCodes.has(code.code)}
-                              canSelect={true}
-                              generating={generating}
-                              onToggleCode={onToggleCode}
-                              onDeleteRule={onDeleteRule}
-                              onViewRule={onViewRule}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {/* Procedures with rules */}
-                    {proceduresWithRules.length > 0 && (
-                      <div>
-                        <div className="text-[10px] font-semibold text-gray-500 uppercase px-2 py-1">
-                          Procedures ({proceduresWithRules.length})
-                        </div>
-                        <div className="space-y-1">
-                          {proceduresWithRules.map(code => (
-                            <CodeItem
-                              key={code.code}
-                              code={code}
-                              isSelected={selectedCodes.has(code.code)}
-                              canSelect={true}
-                              generating={generating}
-                              onToggleCode={onToggleCode}
-                              onDeleteRule={onDeleteRule}
-                              onViewRule={onViewRule}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
+          <>
+            {/* Generated Rules */}
+            <Section
+              id="generated"
+              icon="✓"
+              title="Generated Rules"
+              count={generatedCodes.length}
+              color="#059669"
+            >
+              <SubSection label="Diagnoses" codes={diagnosesWithRules} />
+              <SubSection label="Procedures" codes={proceduresWithRules} />
+            </Section>
 
-            {/* Diagnoses Section - Codes WITHOUT rules */}
-            {diagnosesWithoutRules.length > 0 && (
-              <div className="border rounded-lg overflow-hidden">
-                <button
-                  onClick={() => setShowDiagnoses(!showDiagnoses)}
-                  className="w-full flex items-center gap-2 px-3 py-2 bg-gray-50 hover:bg-gray-100 transition-colors"
-                >
-                  {showDiagnoses ? (
-                    <ChevronDown className="w-4 h-4 text-gray-400" />
-                  ) : (
-                    <ChevronRight className="w-4 h-4 text-gray-400" />
-                  )}
-                  <span className="text-xs font-semibold text-gray-600 uppercase">
-                    Diagnoses
-                  </span>
-                  <span className="text-xs text-gray-400">
-                    ({diagnosesWithoutRules.length})
-                  </span>
-                </button>
-                {showDiagnoses && (
-                  <div className="p-2 space-y-1">
-                    {diagnosesWithoutRules.map(code => (
-                      <CodeItem
-                        key={code.code}
-                        code={code}
-                        isSelected={selectedCodes.has(code.code)}
-                        canSelect={true}
-                        generating={generating}
-                        onToggleCode={onToggleCode}
-                        onDeleteRule={onDeleteRule}
-                        onViewRule={onViewRule}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Procedures Section - Codes WITHOUT rules */}
-            {proceduresWithoutRules.length > 0 && (
-              <div className="border rounded-lg overflow-hidden">
-                <button
-                  onClick={() => setShowProcedures(!showProcedures)}
-                  className="w-full flex items-center gap-2 px-3 py-2 bg-gray-50 hover:bg-gray-100 transition-colors"
-                >
-                  {showProcedures ? (
-                    <ChevronDown className="w-4 h-4 text-gray-400" />
-                  ) : (
-                    <ChevronRight className="w-4 h-4 text-gray-400" />
-                  )}
-                  <span className="text-xs font-semibold text-gray-600 uppercase">
-                    Procedures
-                  </span>
-                  <span className="text-xs text-gray-400">
-                    ({proceduresWithoutRules.length})
-                  </span>
-                </button>
-                {showProcedures && (
-                  <div className="p-2 space-y-1">
-                    {proceduresWithoutRules.map(code => (
-                      <CodeItem
-                        key={code.code}
-                        code={code}
-                        isSelected={selectedCodes.has(code.code)}
-                        canSelect={true}
-                        generating={generating}
-                        onToggleCode={onToggleCode}
-                        onDeleteRule={onDeleteRule}
-                        onViewRule={onViewRule}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+            {/* Ready to Generate */}
+            <Section
+              id="ready"
+              icon="⚡"
+              title="Ready to Generate"
+              count={readyToGenerate.length}
+              color="#0090DA"
+            >
+              <SubSection label="Diagnoses" codes={diagnosesWithoutRules} />
+              <SubSection label="Procedures" codes={proceduresWithoutRules} />
+            </Section>
+          </>
         )}
       </div>
     </div>
@@ -1288,11 +1313,15 @@ export default function RuleGeneration() {
   const [selectedCodes, setSelectedCodes] = useState(new Set());
   const [generating, setGenerating] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
+
+  // Auto-select first category when categories load
+  useEffect(() => {
+    if (!selectedCategory && categories.length > 0) {
+      setSelectedCategory(categories[0].name);
+    }
+  }, [categories, selectedCategory]);
   const [generationProgress, setGenerationProgress] = useState({});
   const [viewingCode, setViewingCode] = useState(null);
-
-  const selectedCategoryInfo = categories.find(c => c.name === selectedCategory);
-  const categoryColor = selectedCategoryInfo?.color || '#6B7280';
 
   const handleViewRule = (code) => {
     setViewingCode(code);
@@ -1340,17 +1369,16 @@ export default function RuleGeneration() {
     }
   };
 
-  const handleGenerate = async () => {
-    if (selectedCodes.size === 0) return;
+  // Generate rules for given codes (batch or single)
+  const generateRules = async (codes) => {
+    if (codes.length === 0) return;
 
     setGenerating(true);
     setShowProgress(true);
 
-    const codesToGenerate = Array.from(selectedCodes);
-
     // Initialize progress with new structure
     const initialProgress = {};
-    codesToGenerate.forEach(code => {
+    codes.forEach(code => {
       initialProgress[code] = {
         status: 'pending',
         steps: {},
@@ -1360,7 +1388,7 @@ export default function RuleGeneration() {
     setGenerationProgress(initialProgress);
 
     // Generate sequentially
-    for (const code of codesToGenerate) {
+    for (const code of codes) {
       // Mark as generating
       setGenerationProgress(prev => ({
         ...prev,
@@ -1380,7 +1408,7 @@ export default function RuleGeneration() {
           body: JSON.stringify({
             code,
             code_type: 'ICD-10',
-            parallel_validators: true  // Enable parallel mentor/redteam
+            parallel_validators: true
           })
         });
 
@@ -1398,7 +1426,7 @@ export default function RuleGeneration() {
 
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
-          buffer = lines.pop() || ''; // Keep incomplete line in buffer
+          buffer = lines.pop() || '';
 
           for (const line of lines) {
             const trimmed = line.trim();
@@ -1407,75 +1435,53 @@ export default function RuleGeneration() {
             const data = parseSSELine(trimmed);
             if (!data) continue;
 
-            // Handle different event types
             const { step, type } = data;
 
             if (step === 'done') {
-              // Pipeline complete
               setGenerationProgress(prev => ({
                 ...prev,
-                [code]: {
-                  ...prev[code],
-                  status: 'complete'
-                }
+                [code]: { ...prev[code], status: 'complete' }
               }));
               continue;
             }
 
             if (step === 'error') {
-              // Pipeline error
               setGenerationProgress(prev => ({
                 ...prev,
-                [code]: {
-                  ...prev[code],
-                  status: 'error',
-                  error: data.message || 'Unknown error'
-                }
+                [code]: { ...prev[code], status: 'error', error: data.message || 'Unknown error' }
               }));
               continue;
             }
 
-            // Update step progress
             setGenerationProgress(prev => {
               const prevCode = prev[code] || { status: 'generating', steps: {} };
               const prevStep = prevCode.steps[step] || { status: 'idle', thinking: '', content: '' };
-
               let updatedStep = { ...prevStep };
 
               switch (type) {
                 case 'status':
-                  // Step started/streaming
                   updatedStep.status = data.status || 'streaming';
                   if (data.message) updatedStep.message = data.message;
                   break;
-
                 case 'thought':
                 case 'thinking':
-                  // Append thinking chunk
                   updatedStep.status = 'streaming';
                   updatedStep.thinking = (updatedStep.thinking || '') + (data.thinking || data.content || '');
                   break;
-
                 case 'content':
                 case 'text':
-                  // Append content chunk
                   updatedStep.status = 'streaming';
                   updatedStep.content = (updatedStep.content || '') + (data.content || data.text || '');
                   break;
-
                 case 'done':
-                  // Step complete
                   updatedStep.status = 'done';
                   if (data.full_text) updatedStep.content = data.full_text;
                   if (data.full_thinking) updatedStep.thinking = data.full_thinking;
                   if (data.duration_ms) updatedStep.duration_ms = data.duration_ms;
-                  if (data.corrections_count !== undefined) {
-                    updatedStep.corrections_count = data.corrections_count;
-                  }
+                  if (data.corrections_count !== undefined) updatedStep.corrections_count = data.corrections_count;
                   if (data.verdict) updatedStep.verdict = data.verdict;
                   if (data.citations_check) updatedStep.citations_check = data.citations_check;
                   break;
-
                 case 'error':
                   updatedStep.status = 'error';
                   updatedStep.error = data.message;
@@ -1484,25 +1490,15 @@ export default function RuleGeneration() {
 
               return {
                 ...prev,
-                [code]: {
-                  ...prevCode,
-                  steps: {
-                    ...prevCode.steps,
-                    [step]: updatedStep
-                  }
-                }
+                [code]: { ...prevCode, steps: { ...prevCode.steps, [step]: updatedStep } }
               };
             });
           }
         }
 
-        // Ensure marked as complete if not already
         setGenerationProgress(prev => {
           if (prev[code]?.status === 'generating') {
-            return {
-              ...prev,
-              [code]: { ...prev[code], status: 'complete' }
-            };
+            return { ...prev, [code]: { ...prev[code], status: 'complete' } };
           }
           return prev;
         });
@@ -1511,11 +1507,7 @@ export default function RuleGeneration() {
         console.error(`Failed to generate rule for ${code}:`, err);
         setGenerationProgress(prev => ({
           ...prev,
-          [code]: {
-            ...prev[code],
-            status: 'error',
-            error: err.message
-          }
+          [code]: { ...prev[code], status: 'error', error: err.message }
         }));
       }
     }
@@ -1526,13 +1518,24 @@ export default function RuleGeneration() {
     if (refetchCodes) refetchCodes();
   };
 
+  // Single code generation (from individual Generate button)
+  const handleGenerateSingle = (code) => {
+    generateRules([code]);
+  };
+
+  // Batch generation (from header Generate button)
+  const handleGenerate = async () => {
+    if (selectedCodes.size === 0) return;
+    generateRules(Array.from(selectedCodes));
+  };
+
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
       <div className="p-4 border-b bg-white">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="font-semibold text-lg">Rule Generation</h2>
+            <h2 className="font-semibold text-lg">Guideline Rules</h2>
             <p className="text-sm text-gray-500">
               {total_with_rules} / {total_codes} codes have rules
             </p>
@@ -1565,7 +1568,6 @@ export default function RuleGeneration() {
           {selectedCategory ? (
             <CodeList
               categoryName={selectedCategory}
-              categoryColor={categoryColor}
               diagnoses={diagnoses}
               procedures={procedures}
               loading={codesLoading}
@@ -1573,6 +1575,7 @@ export default function RuleGeneration() {
               onToggleCode={handleToggleCode}
               onSelectAll={handleSelectAll}
               onGenerate={handleGenerate}
+              onGenerateSingle={handleGenerateSingle}
               onDeleteRule={handleDeleteRule}
               onViewRule={handleViewRule}
               generating={generating}

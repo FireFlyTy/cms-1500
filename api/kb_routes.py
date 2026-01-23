@@ -34,11 +34,16 @@ from src.db.connection import get_db_connection
 # CONFIG
 # ============================================================
 
+# Project root (api/ is one level down from project root)
+from pathlib import Path
+PROJECT_ROOT = Path(__file__).parent.parent
+
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_MODEL_NAME = os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
 
-DOCUMENTS_DIR = os.getenv("DOCUMENTS_DIR", "data/processed/documents")
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "data/raw/documents")
+# Make paths absolute relative to project root
+DOCUMENTS_DIR = os.getenv("DOCUMENTS_DIR", str(PROJECT_ROOT / "data/processed/documents"))
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", str(PROJECT_ROOT / "data/raw/documents"))
 
 CHUNK_SIZE = 15  # Pages per chunk
 PARALLEL_LIMIT = 5  # Concurrent API calls
