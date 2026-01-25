@@ -1,0 +1,267 @@
+{
+  "ICD-10": {
+    "description": "International Classification of Diseases, 10th Revision - Diagnosis codes",
+    "categories": {
+      "A": {
+        "range": "A00-A99",
+        "name": "Certain infectious and parasitic diseases",
+        "includes": ["bacterial infections", "viral infections", "parasitic diseases", "tuberculosis", "sepsis"]
+      },
+      "B": {
+        "range": "B00-B99",
+        "name": "Certain infectious and parasitic diseases (continued)",
+        "includes": ["viral hepatitis", "HIV", "mycoses", "helminthiases"]
+      },
+      "C": {
+        "range": "C00-C96",
+        "name": "Malignant neoplasms",
+        "includes": ["cancer", "carcinoma", "lymphoma", "leukemia", "melanoma"]
+      },
+      "D": {
+        "range": "D00-D89",
+        "name": "Neoplasms and blood diseases",
+        "includes": ["benign neoplasms", "anemia", "coagulation defects", "immunodeficiency"]
+      },
+      "E": {
+        "range": "E00-E89",
+        "name": "Endocrine, nutritional and metabolic diseases",
+        "includes": ["diabetes mellitus", "thyroid disorders", "obesity", "hyperlipidemia", "malnutrition", "metabolic disorders"]
+      },
+      "F": {
+        "range": "F01-F99",
+        "name": "Mental, behavioral and neurodevelopmental disorders",
+        "includes": ["depression", "anxiety", "bipolar", "schizophrenia", "substance abuse", "ADHD", "autism"]
+      },
+      "G": {
+        "range": "G00-G99",
+        "name": "Diseases of the nervous system",
+        "includes": ["epilepsy", "migraine", "Parkinson", "Alzheimer", "neuropathy", "sleep disorders"]
+      },
+      "H": {
+        "range": "H00-H95",
+        "name": "Diseases of eye and ear",
+        "includes": ["glaucoma", "cataracts", "macular degeneration", "hearing loss", "otitis"]
+      },
+      "I": {
+        "range": "I00-I99",
+        "name": "Diseases of the circulatory system",
+        "includes": ["hypertension", "heart failure", "coronary artery disease", "atrial fibrillation", "stroke", "DVT"]
+      },
+      "J": {
+        "range": "J00-J99",
+        "name": "Diseases of the respiratory system",
+        "includes": ["COPD", "asthma", "pneumonia", "bronchitis", "respiratory failure"]
+      },
+      "K": {
+        "range": "K00-K95",
+        "name": "Diseases of the digestive system",
+        "includes": ["GERD", "ulcers", "Crohn's disease", "cirrhosis", "pancreatitis", "gallstones"]
+      },
+      "L": {
+        "range": "L00-L99",
+        "name": "Diseases of the skin and subcutaneous tissue",
+        "includes": ["dermatitis", "psoriasis", "cellulitis", "pressure ulcers", "skin infections"]
+      },
+      "M": {
+        "range": "M00-M99",
+        "name": "Diseases of the musculoskeletal system",
+        "includes": ["osteoarthritis", "rheumatoid arthritis", "osteoporosis", "back pain", "fibromyalgia"]
+      },
+      "N": {
+        "range": "N00-N99",
+        "name": "Diseases of the genitourinary system",
+        "includes": ["chronic kidney disease", "UTI", "kidney stones", "BPH", "endometriosis"]
+      },
+      "O": {
+        "range": "O00-O9A",
+        "name": "Pregnancy, childbirth and the puerperium",
+        "includes": ["gestational diabetes", "preeclampsia", "ectopic pregnancy", "complications of labor"]
+      },
+      "P": {
+        "range": "P00-P96",
+        "name": "Certain conditions originating in the perinatal period",
+        "includes": ["prematurity", "birth trauma", "neonatal jaundice", "respiratory distress syndrome"]
+      },
+      "Q": {
+        "range": "Q00-Q99",
+        "name": "Congenital malformations and chromosomal abnormalities",
+        "includes": ["Down syndrome", "congenital heart defects", "cleft palate", "spina bifida"]
+      },
+      "R": {
+        "range": "R00-R99",
+        "name": "Symptoms, signs and abnormal clinical findings",
+        "includes": ["chest pain", "dyspnea", "fever", "abnormal lab findings", "syncope"]
+      },
+      "S": {
+        "range": "S00-S99",
+        "name": "Injuries to specific body regions",
+        "includes": ["fractures", "dislocations", "sprains", "wounds", "traumatic injuries"]
+      },
+      "T": {
+        "range": "T00-T88",
+        "name": "Injuries, poisoning and other consequences of external causes",
+        "includes": ["burns", "poisoning", "drug adverse effects", "complications of care"]
+      },
+      "V": {
+        "range": "V00-V99",
+        "name": "Transport accidents",
+        "includes": ["motor vehicle accidents", "pedestrian injuries", "cycling accidents"]
+      },
+      "W": {
+        "range": "W00-W99",
+        "name": "Other external causes of accidental injury",
+        "includes": ["falls", "drowning", "exposure to forces", "contact with objects"]
+      },
+      "X": {
+        "range": "X00-X99",
+        "name": "Exposure and intentional self-harm",
+        "includes": ["fire exposure", "assault", "intentional self-harm", "undetermined intent"]
+      },
+      "Y": {
+        "range": "Y00-Y99",
+        "name": "External causes and supplementary factors",
+        "includes": ["assault", "legal intervention", "medical/surgical complications"]
+      },
+      "Z": {
+        "range": "Z00-Z99",
+        "name": "Factors influencing health status and contact with health services",
+        "includes": ["screening", "immunization", "long-term medication use", "family history", "BMI codes"]
+      }
+    }
+  },
+  "HCPCS": {
+    "description": "Healthcare Common Procedure Coding System - Supplies, equipment, and non-physician services",
+    "categories": {
+      "A": {
+        "range": "A0000-A9999",
+        "name": "Transportation, medical/surgical supplies, administrative",
+        "includes": ["ambulance", "medical supplies", "miscellaneous supplies", "radiopharmaceuticals"]
+      },
+      "B": {
+        "range": "B4000-B9999",
+        "name": "Enteral and parenteral therapy",
+        "includes": ["enteral nutrition", "parenteral nutrition", "IV solutions", "feeding supplies"]
+      },
+      "C": {
+        "range": "C1000-C9999",
+        "name": "Hospital outpatient prospective payment",
+        "includes": ["outpatient PPS", "device codes", "new technology", "pass-through drugs"]
+      },
+      "E": {
+        "range": "E0100-E9999",
+        "name": "Durable Medical Equipment (DME)",
+        "includes": ["wheelchairs", "hospital beds", "oxygen equipment", "CPAP", "walkers", "crutches"]
+      },
+      "G": {
+        "range": "G0000-G9999",
+        "name": "Procedures and professional services",
+        "includes": ["screening services", "quality measures", "telehealth", "care management"]
+      },
+      "J": {
+        "range": "J0000-J9999",
+        "name": "Drugs administered other than oral method",
+        "includes": ["injectable drugs", "infusion drugs", "chemotherapy drugs", "immunosuppressants", "biologics"]
+      },
+      "K": {
+        "range": "K0000-K9999",
+        "name": "Temporary DME codes",
+        "includes": ["power wheelchairs", "CGM supplies", "wound care", "orthotic additions"]
+      },
+      "L": {
+        "range": "L0000-L9999",
+        "name": "Orthotics and prosthetics",
+        "includes": ["orthopedic shoes", "braces", "prosthetic limbs", "spinal orthoses"]
+      },
+      "M": {
+        "range": "M0000-M0301",
+        "name": "Medical services",
+        "includes": ["office services", "cellular therapy", "prolotherapy"]
+      },
+      "P": {
+        "range": "P2000-P9999",
+        "name": "Pathology and laboratory services",
+        "includes": ["chemistry tests", "blood products", "travel allowance"]
+      },
+      "Q": {
+        "range": "Q0000-Q9999",
+        "name": "Temporary codes",
+        "includes": ["cast supplies", "drugs", "hospice", "services not elsewhere classified"]
+      },
+      "R": {
+        "range": "R0000-R0076",
+        "name": "Diagnostic radiology services",
+        "includes": ["portable X-ray", "EKG transport"]
+      },
+      "S": {
+        "range": "S0000-S9999",
+        "name": "Temporary national codes (non-Medicare)",
+        "includes": ["private payer codes", "Medicaid", "Blue Cross"]
+      },
+      "T": {
+        "range": "T1000-T9999",
+        "name": "State Medicaid agency codes",
+        "includes": ["nursing services", "home health", "substance abuse treatment"]
+      },
+      "V": {
+        "range": "V0000-V5364",
+        "name": "Vision and hearing services",
+        "includes": ["eyeglasses", "contact lenses", "hearing aids", "vision therapy"]
+      }
+    }
+  },
+  "CPT": {
+    "description": "Current Procedural Terminology - Physician and outpatient services",
+    "categories": {
+      "00": {
+        "range": "00100-01999",
+        "name": "Anesthesia",
+        "includes": ["general anesthesia", "regional anesthesia", "monitored anesthesia care"]
+      },
+      "1": {
+        "range": "10000-19999",
+        "name": "Surgery - Integumentary System",
+        "includes": ["skin procedures", "wound repair", "skin grafts", "breast procedures", "burns"]
+      },
+      "2": {
+        "range": "20000-29999",
+        "name": "Surgery - Musculoskeletal System",
+        "includes": ["fracture care", "joint procedures", "spine surgery", "arthroscopy", "amputations"]
+      },
+      "3": {
+        "range": "30000-39999",
+        "name": "Surgery - Respiratory and Cardiovascular",
+        "includes": ["sinus surgery", "laryngoscopy", "thoracotomy", "cardiac surgery", "pacemakers", "vascular procedures"]
+      },
+      "4": {
+        "range": "40000-49999",
+        "name": "Surgery - Digestive System",
+        "includes": ["GI endoscopy", "appendectomy", "cholecystectomy", "hernia repair", "liver procedures"]
+      },
+      "5": {
+        "range": "50000-59999",
+        "name": "Surgery - Urinary and Reproductive",
+        "includes": ["kidney procedures", "bladder procedures", "prostate surgery", "hysterectomy", "obstetric procedures"]
+      },
+      "6": {
+        "range": "60000-69999",
+        "name": "Surgery - Endocrine, Nervous, Eye, Ear",
+        "includes": ["thyroid surgery", "neurosurgery", "cataract surgery", "ear surgery"]
+      },
+      "7": {
+        "range": "70000-79999",
+        "name": "Radiology",
+        "includes": ["X-ray", "CT scan", "MRI", "ultrasound", "nuclear medicine", "radiation oncology"]
+      },
+      "8": {
+        "range": "80000-89999",
+        "name": "Pathology and Laboratory",
+        "includes": ["blood tests", "urinalysis", "chemistry panels", "microbiology", "cytopathology", "genetic testing"]
+      },
+      "9": {
+        "range": "90000-99999",
+        "name": "Medicine, Evaluation and Management",
+        "includes": ["office visits", "hospital visits", "consultations", "immunizations", "infusions", "psychiatry", "dialysis", "physical therapy"]
+      }
+    }
+  }
+}

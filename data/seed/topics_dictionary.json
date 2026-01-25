@@ -1,0 +1,477 @@
+{
+  "topics": [
+    {
+      "name": "Type 2 Diabetes Mellitus",
+      "category": "disease",
+      "aliases": ["T2DM", "Type II Diabetes", "Adult-onset Diabetes", "NIDDM"],
+      "description": "Metabolic disorder characterized by insulin resistance and relative insulin deficiency",
+      "icd10_patterns": ["E11%"]
+    },
+    {
+      "name": "Type 1 Diabetes Mellitus",
+      "category": "disease",
+      "aliases": ["T1DM", "Juvenile Diabetes", "Insulin-dependent Diabetes", "IDDM"],
+      "description": "Autoimmune destruction of pancreatic beta cells",
+      "icd10_patterns": ["E10%"]
+    },
+    {
+      "name": "Gestational Diabetes",
+      "category": "disease",
+      "aliases": ["GDM", "Pregnancy Diabetes"],
+      "description": "Diabetes during pregnancy",
+      "icd10_patterns": ["O24%"]
+    },
+    {
+      "name": "Diabetic Complications",
+      "category": "disease",
+      "aliases": ["Diabetes Complications", "DM Complications"],
+      "description": "Complications arising from diabetes mellitus",
+      "icd10_patterns": ["E10.2%", "E10.3%", "E10.4%", "E10.5%", "E10.6%", "E11.2%", "E11.3%", "E11.4%", "E11.5%", "E11.6%"]
+    },
+    {
+      "name": "Major Depressive Disorder",
+      "category": "disease",
+      "aliases": ["MDD", "Clinical Depression", "Unipolar Depression"],
+      "description": "Persistent depressive mood disorder",
+      "icd10_patterns": ["F32%", "F33%"]
+    },
+    {
+      "name": "Bipolar Disorder",
+      "category": "disease",
+      "aliases": ["Manic Depression", "Bipolar Affective Disorder"],
+      "description": "Mood disorder with manic and depressive episodes",
+      "icd10_patterns": ["F31%"]
+    },
+    {
+      "name": "Anxiety Disorders",
+      "category": "disease",
+      "aliases": ["Generalized Anxiety", "GAD", "Panic Disorder"],
+      "description": "Disorders characterized by excessive worry and fear",
+      "icd10_patterns": ["F40%", "F41%"]
+    },
+    {
+      "name": "Chronic Kidney Disease",
+      "category": "disease",
+      "aliases": ["CKD", "Chronic Renal Failure", "Renal Insufficiency"],
+      "description": "Progressive loss of kidney function",
+      "icd10_patterns": ["N18%"]
+    },
+    {
+      "name": "End Stage Renal Disease",
+      "category": "disease",
+      "aliases": ["ESRD", "Kidney Failure", "Dialysis-dependent"],
+      "description": "Final stage of chronic kidney disease requiring dialysis or transplant",
+      "icd10_patterns": ["N18.6"]
+    },
+    {
+      "name": "Heart Failure",
+      "category": "disease",
+      "aliases": ["CHF", "Congestive Heart Failure", "HF", "Cardiac Failure"],
+      "description": "Inability of heart to pump sufficient blood",
+      "icd10_patterns": ["I50%"]
+    },
+    {
+      "name": "Hypertension",
+      "category": "disease",
+      "aliases": ["HTN", "High Blood Pressure", "Elevated BP"],
+      "description": "Persistently elevated arterial blood pressure",
+      "icd10_patterns": ["I10%", "I11%", "I12%", "I13%", "I15%"]
+    },
+    {
+      "name": "Coronary Artery Disease",
+      "category": "disease",
+      "aliases": ["CAD", "Ischemic Heart Disease", "CHD", "Atherosclerotic Heart Disease"],
+      "description": "Narrowing of coronary arteries",
+      "icd10_patterns": ["I25%"]
+    },
+    {
+      "name": "Atrial Fibrillation",
+      "category": "disease",
+      "aliases": ["AFib", "AF", "A-Fib"],
+      "description": "Irregular and rapid heart rate",
+      "icd10_patterns": ["I48%"]
+    },
+    {
+      "name": "Obesity",
+      "category": "disease",
+      "aliases": ["Morbid Obesity", "Severe Obesity", "Overweight"],
+      "description": "Excess body weight and adiposity",
+      "icd10_patterns": ["E66%"]
+    },
+    {
+      "name": "Hyperlipidemia",
+      "category": "disease",
+      "aliases": ["High Cholesterol", "Dyslipidemia", "Hypercholesterolemia"],
+      "description": "Elevated lipid levels in blood",
+      "icd10_patterns": ["E78%"]
+    },
+    {
+      "name": "Chronic Pain",
+      "category": "disease",
+      "aliases": ["Persistent Pain", "Intractable Pain"],
+      "description": "Pain lasting more than 3 months",
+      "icd10_patterns": ["G89%"]
+    },
+    {
+      "name": "Low Back Pain",
+      "category": "disease",
+      "aliases": ["LBP", "Lumbar Pain", "Lumbago"],
+      "description": "Pain in the lumbar spine region",
+      "icd10_patterns": ["M54.5%", "M54.4%"]
+    },
+    {
+      "name": "Osteoarthritis",
+      "category": "disease",
+      "aliases": ["OA", "Degenerative Joint Disease", "DJD"],
+      "description": "Degenerative joint condition",
+      "icd10_patterns": ["M15%", "M16%", "M17%", "M18%", "M19%"]
+    },
+    {
+      "name": "Rheumatoid Arthritis",
+      "category": "disease",
+      "aliases": ["RA", "Inflammatory Arthritis"],
+      "description": "Autoimmune inflammatory arthritis",
+      "icd10_patterns": ["M05%", "M06%"]
+    },
+    {
+      "name": "COPD",
+      "category": "disease",
+      "aliases": ["Chronic Obstructive Pulmonary Disease", "Emphysema", "Chronic Bronchitis"],
+      "description": "Chronic inflammatory lung disease",
+      "icd10_patterns": ["J44%"]
+    },
+    {
+      "name": "Asthma",
+      "category": "disease",
+      "aliases": ["Bronchial Asthma", "Reactive Airway Disease"],
+      "description": "Chronic respiratory condition with airway inflammation",
+      "icd10_patterns": ["J45%"]
+    },
+    {
+      "name": "Sleep Apnea",
+      "category": "disease",
+      "aliases": ["OSA", "Obstructive Sleep Apnea", "Sleep Disordered Breathing"],
+      "description": "Breathing repeatedly stops during sleep",
+      "icd10_patterns": ["G47.3%"]
+    },
+    {
+      "name": "Stroke",
+      "category": "disease",
+      "aliases": ["CVA", "Cerebrovascular Accident", "Brain Attack"],
+      "description": "Disruption of blood supply to the brain",
+      "icd10_patterns": ["I63%", "I64%"]
+    },
+    {
+      "name": "Peripheral Neuropathy",
+      "category": "disease",
+      "aliases": ["Neuropathy", "Nerve Damage", "Polyneuropathy"],
+      "description": "Damage to peripheral nerves",
+      "icd10_patterns": ["G60%", "G62%", "G63%"]
+    },
+    {
+      "name": "HIV/AIDS",
+      "category": "disease",
+      "aliases": ["Human Immunodeficiency Virus", "Acquired Immunodeficiency Syndrome"],
+      "description": "Viral infection affecting immune system",
+      "icd10_patterns": ["B20%", "Z21%"]
+    },
+    {
+      "name": "GLP-1 Receptor Agonist Therapy",
+      "category": "treatment",
+      "aliases": ["GLP-1 RA", "Incretin Therapy", "GLP-1 Agonists"],
+      "description": "Medications that mimic incretin hormones",
+      "hcpcs_patterns": ["J1950", "J3490"]
+    },
+    {
+      "name": "Insulin Therapy",
+      "category": "treatment",
+      "aliases": ["Insulin Treatment", "Insulin Administration"],
+      "description": "Administration of insulin for diabetes management",
+      "icd10_patterns": ["Z79.4"],
+      "hcpcs_patterns": ["J1815", "J1817"]
+    },
+    {
+      "name": "SGLT2 Inhibitor Therapy",
+      "category": "treatment",
+      "aliases": ["SGLT2i", "Sodium-glucose Cotransporter-2 Inhibitors"],
+      "description": "Medications that reduce glucose reabsorption in kidneys",
+      "icd10_patterns": ["Z79.84"]
+    },
+    {
+      "name": "Continuous Glucose Monitoring",
+      "category": "treatment",
+      "aliases": ["CGM", "Glucose Sensor", "Real-time Glucose Monitoring"],
+      "description": "Device-based continuous glucose measurement",
+      "cpt_patterns": ["95249", "95250", "95251"]
+    },
+    {
+      "name": "Dialysis",
+      "category": "treatment",
+      "aliases": ["Hemodialysis", "Peritoneal Dialysis", "Renal Replacement Therapy"],
+      "description": "Artificial kidney function replacement",
+      "cpt_patterns": ["9093%", "9094%", "9096%", "9097%"]
+    },
+    {
+      "name": "Psychotherapy",
+      "category": "treatment",
+      "aliases": ["Talk Therapy", "Counseling", "Mental Health Therapy"],
+      "description": "Therapeutic treatment through conversation",
+      "cpt_patterns": ["9083%", "9084%"]
+    },
+    {
+      "name": "Physical Therapy",
+      "category": "treatment",
+      "aliases": ["PT", "Physiotherapy", "Physical Rehabilitation"],
+      "description": "Treatment using exercises and manual therapy",
+      "cpt_patterns": ["9711%", "9712%", "9713%", "9714%"]
+    },
+    {
+      "name": "Cardiac Catheterization",
+      "category": "procedure",
+      "aliases": ["Heart Cath", "Coronary Angiography", "Cardiac Cath"],
+      "description": "Invasive procedure to diagnose heart conditions",
+      "cpt_patterns": ["9345%", "9346%"]
+    },
+    {
+      "name": "Electrocardiogram",
+      "category": "procedure",
+      "aliases": ["ECG", "EKG", "12-lead ECG"],
+      "description": "Recording of heart electrical activity",
+      "cpt_patterns": ["9300%", "9301%"]
+    },
+    {
+      "name": "Echocardiogram",
+      "category": "procedure",
+      "aliases": ["Echo", "Cardiac Ultrasound", "Heart Echo"],
+      "description": "Ultrasound imaging of the heart",
+      "cpt_patterns": ["9330%", "9331%", "9335%"]
+    },
+    {
+      "name": "Psychiatric Evaluation",
+      "category": "procedure",
+      "aliases": ["Psych Eval", "Mental Health Assessment", "Psychiatric Assessment"],
+      "description": "Comprehensive psychiatric diagnostic interview",
+      "cpt_patterns": ["90791", "90792"]
+    },
+    {
+      "name": "Laboratory Testing",
+      "category": "procedure",
+      "aliases": ["Lab Tests", "Blood Work", "Clinical Laboratory"],
+      "description": "Analysis of blood and body fluid samples",
+      "cpt_patterns": ["8000%", "8100%", "8200%", "8300%", "8400%", "8500%"]
+    },
+    {
+      "name": "Hemoglobin A1c",
+      "category": "procedure",
+      "aliases": ["HbA1c", "Glycated Hemoglobin", "A1C Test"],
+      "description": "Blood test measuring average glucose over 2-3 months",
+      "cpt_patterns": ["83036", "83037"]
+    },
+    {
+      "name": "Cardiovascular System",
+      "category": "anatomy",
+      "aliases": ["Heart", "Circulatory System", "Vascular System"],
+      "description": "Heart and blood vessels",
+      "icd10_patterns": ["I%"]
+    },
+    {
+      "name": "Endocrine System",
+      "category": "anatomy",
+      "aliases": ["Hormonal System", "Glands"],
+      "description": "Hormone-producing glands and organs",
+      "icd10_patterns": ["E%"]
+    },
+    {
+      "name": "Nervous System",
+      "category": "anatomy",
+      "aliases": ["Neurological System", "Brain and Nerves"],
+      "description": "Brain, spinal cord, and peripheral nerves",
+      "icd10_patterns": ["G%"]
+    },
+    {
+      "name": "Musculoskeletal System",
+      "category": "anatomy",
+      "aliases": ["Bones and Joints", "Skeletal System", "Orthopedic"],
+      "description": "Bones, muscles, joints, and connective tissue",
+      "icd10_patterns": ["M%"]
+    },
+    {
+      "name": "Respiratory System",
+      "category": "anatomy",
+      "aliases": ["Lungs", "Pulmonary System", "Airways"],
+      "description": "Lungs and breathing apparatus",
+      "icd10_patterns": ["J%"]
+    },
+    {
+      "name": "Renal System",
+      "category": "anatomy",
+      "aliases": ["Kidneys", "Urinary System", "Genitourinary"],
+      "description": "Kidneys and urinary tract",
+      "icd10_patterns": ["N%"]
+    },
+    {
+      "name": "Mental Health",
+      "category": "anatomy",
+      "aliases": ["Psychiatric", "Behavioral Health", "Psychology"],
+      "description": "Mental and behavioral conditions",
+      "icd10_patterns": ["F%"]
+    },
+    {
+      "name": "Prior Authorization",
+      "category": "procedure",
+      "aliases": ["PA", "Pre-authorization", "Pre-cert"],
+      "description": "Insurance approval requirement before service"
+    },
+    {
+      "name": "Step Therapy",
+      "category": "procedure",
+      "aliases": ["Step Protocol", "Fail First", "Drug Formulary Steps"],
+      "description": "Requirement to try lower-cost drugs first"
+    },
+    {
+      "name": "Medical Necessity",
+      "category": "procedure",
+      "aliases": ["Clinical Necessity", "Medically Necessary"],
+      "description": "Services required to diagnose or treat medical condition"
+    },
+    {
+      "name": "Comorbidity",
+      "category": "disease",
+      "aliases": ["Co-occurring Conditions", "Multiple Diagnoses"],
+      "description": "Presence of multiple medical conditions"
+    },
+    {
+      "name": "Glycemic Control",
+      "category": "treatment",
+      "aliases": ["Blood Sugar Control", "Glucose Management"],
+      "description": "Management of blood glucose levels",
+      "icd10_patterns": ["E11%", "E10%"]
+    },
+    {
+      "name": "Anemia",
+      "category": "disease",
+      "aliases": ["Low Hemoglobin", "Low Blood Count", "Iron Deficiency Anemia"],
+      "description": "Deficiency in red blood cells or hemoglobin",
+      "icd10_patterns": ["D50%", "D51%", "D52%", "D53%", "D63%", "D64%"]
+    },
+    {
+      "name": "Malignant Neoplasms",
+      "category": "disease",
+      "aliases": ["Cancer", "Malignancy", "Carcinoma", "Tumor"],
+      "description": "Cancerous growths and tumors",
+      "icd10_patterns": ["C%"]
+    },
+    {
+      "name": "Osteoporosis",
+      "category": "disease",
+      "aliases": ["Bone Loss", "Low Bone Density", "Brittle Bones"],
+      "description": "Decreased bone density and increased fracture risk",
+      "icd10_patterns": ["M80%", "M81%"]
+    },
+    {
+      "name": "Pregnancy and Childbirth",
+      "category": "disease",
+      "aliases": ["Pregnancy", "Obstetric", "Prenatal", "Maternal", "Puerperium", "Childbirth"],
+      "description": "Pregnancy, labor, delivery and postpartum conditions",
+      "icd10_patterns": ["O%"]
+    },
+    {
+      "name": "Infectious Diseases",
+      "category": "disease",
+      "aliases": ["Infections", "Bacterial Infection", "Viral Infection", "Sepsis"],
+      "description": "Diseases caused by infectious agents",
+      "icd10_patterns": ["A%", "B%"]
+    },
+    {
+      "name": "Injuries and Trauma",
+      "category": "disease",
+      "aliases": ["Trauma", "Fracture", "Wound", "Injury", "Burns"],
+      "description": "Physical injuries and trauma",
+      "icd10_patterns": ["S%", "T%"]
+    },
+    {
+      "name": "Poisoning and Adverse Effects",
+      "category": "disease",
+      "aliases": ["Overdose", "Drug Toxicity", "Adverse Drug Reaction", "Underdosing"],
+      "description": "Poisoning, adverse effects of drugs and substances",
+      "icd10_patterns": ["T36%", "T37%", "T38%", "T39%", "T40%", "T41%", "T42%", "T43%", "T44%", "T45%", "T46%", "T47%", "T48%", "T49%", "T50%"]
+    },
+    {
+      "name": "Perinatal Conditions",
+      "category": "disease",
+      "aliases": ["Newborn", "Neonatal", "Birth Conditions"],
+      "description": "Conditions originating in the perinatal period",
+      "icd10_patterns": ["P%"]
+    },
+    {
+      "name": "Congenital Anomalies",
+      "category": "disease",
+      "aliases": ["Birth Defects", "Congenital Malformations", "Genetic Disorders"],
+      "description": "Congenital malformations and chromosomal abnormalities",
+      "icd10_patterns": ["Q%"]
+    },
+    {
+      "name": "Signs and Symptoms",
+      "category": "disease",
+      "aliases": ["Abnormal Findings", "Clinical Findings", "Symptoms"],
+      "description": "Signs, symptoms and abnormal clinical findings",
+      "icd10_patterns": ["R%"]
+    },
+    {
+      "name": "External Causes",
+      "category": "disease",
+      "aliases": ["Accidents", "Place of Occurrence", "Activity Codes"],
+      "description": "External causes of morbidity",
+      "icd10_patterns": ["V%", "W%", "X%", "Y%"]
+    },
+    {
+      "name": "Health Status Factors",
+      "category": "disease",
+      "aliases": ["Z Codes", "Health Status", "Personal History", "Follow-up"],
+      "description": "Factors influencing health status and contact with health services",
+      "icd10_patterns": ["Z%"]
+    },
+    {
+      "name": "Digestive System Disorders",
+      "category": "disease",
+      "aliases": ["GI Disorders", "Gastrointestinal", "Stomach", "Intestinal"],
+      "description": "Diseases of the digestive system",
+      "icd10_patterns": ["K%"]
+    },
+    {
+      "name": "Skin Disorders",
+      "category": "disease",
+      "aliases": ["Dermatological", "Skin Conditions", "Dermatitis", "Pressure Ulcer"],
+      "description": "Diseases of skin and subcutaneous tissue",
+      "icd10_patterns": ["L%"]
+    },
+    {
+      "name": "Eye Disorders",
+      "category": "disease",
+      "aliases": ["Ophthalmic", "Vision", "Retinopathy", "Glaucoma", "Cataract"],
+      "description": "Diseases of the eye and adnexa",
+      "icd10_patterns": ["H0%", "H1%", "H2%", "H3%", "H4%", "H5%"]
+    },
+    {
+      "name": "Ear Disorders",
+      "category": "disease",
+      "aliases": ["Hearing Loss", "Otitis", "Auditory"],
+      "description": "Diseases of the ear and mastoid process",
+      "icd10_patterns": ["H6%", "H7%", "H8%", "H9%"]
+    },
+    {
+      "name": "Blood Disorders",
+      "category": "disease",
+      "aliases": ["Hematological", "Coagulation", "Thrombocytopenia", "Leukemia"],
+      "description": "Diseases of blood and blood-forming organs",
+      "icd10_patterns": ["D%"]
+    },
+    {
+      "name": "COVID-19",
+      "category": "disease",
+      "aliases": ["Coronavirus", "SARS-CoV-2", "COVID"],
+      "description": "COVID-19 viral infection",
+      "icd10_patterns": ["U07.1"]
+    }
+  ]
+}
