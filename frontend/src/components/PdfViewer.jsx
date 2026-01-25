@@ -12,18 +12,49 @@ function escapeRegExp(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// Нормализация текста для сравнения
+// Нормализация текста для сравнения (включая лигатуры)
 function normalizeText(text) {
   return text
     .toLowerCase()
+    // Лигатуры → обычные буквы
+    .replace(/ﬁ/g, 'fi')
+    .replace(/ﬂ/g, 'fl')
+    .replace(/ﬀ/g, 'ff')
+    .replace(/ﬃ/g, 'ffi')
+    .replace(/ﬄ/g, 'ffl')
+    .replace(/ﬆ/g, 'st')
+    .replace(/Ꜳ/g, 'aa')
+    .replace(/ꜳ/g, 'aa')
     .replace(/["""]/g, '"')
+    .replace(/['']/g, "'")
+    .replace(/[–—]/g, '-')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// Parse range format: [RANGE]start|||end[/RANGE]
+function parseRangeSearch(text) {
+  if (!text) return null;
+  const rangeMatch = text.match(/\[RANGE\](.*?)\|\|\|(.*?)\[\/RANGE\]/);
+  if (rangeMatch) {
+    return {
+      type: 'range',
+      start: rangeMatch[1].trim(),
+      end: rangeMatch[2].trim()
+    };
+  }
+  return null;
 }
 
 // Очистка поискового запроса от служебных символов
 function cleanSearchText(text, currentPage) {
   if (!text) return [];
+
+  // Check for range format first
+  const rangeSearch = parseRangeSearch(text);
+  if (rangeSearch) {
+    return []; // Range searches are handled separately
+  }
 
   const pagePattern = /\],?\s*\[page:\s*(\d+)\s*\|/gi;
   const allParts = [];
@@ -174,7 +205,7 @@ function PdfViewer({ url, pageNumber, searchText }) {
 
     // Очистка предыдущих подсветок
     spans.forEach(span => {
-      span.classList.remove("pdf-hl", "pdf-hl-paragraph");
+      span.classList.remove("pdf-hl", "pdf-hl-paragraph", "pdf-hl-range");
       span.style.backgroundColor = '';
       span.style.boxShadow = '';
       span.style.borderLeft = '';
@@ -202,11 +233,353 @@ function PdfViewer({ url, pageNumber, searchText }) {
       }
     });
 
-    // Получаем поисковые фразы
+    const lowerFullText = fullText.toLowerCase();
+
+    // Check for range search format
+    const rangeSearch = parseRangeSearch(searchText);
+    if (rangeSearch) {
+      const lowerStart = rangeSearch.start.toLowerCase().replace(/\s+/g, ' ').trim();
+      const lowerEnd = rangeSearch.end.toLowerCase().replace(/\s+/g, ' ').trim();
+
+      console.log(`🔍 Range search: "${lowerStart.substring(0, 30)}..." to "${lowerEnd.substring(0, 30)}..."`);
+
+      // Helper: make regex pattern that handles ligatures
+      const makeLigaturePattern = (word) => {
+        return word
+          .replace(/[-.*+?^${}()|[\]\\]/g, '\\$&')
+          .replace(/fi/gi, '(fi|ﬁ)')
+          .replace(/fl/gi, '(fl|ﬂ)')
+          .replace(/ff/gi, '(ff|ﬀ)')
+          .replace(/ffi/gi, '(ffi|ﬃ)')
+          .replace(/ffl/gi, '(ffl|ﬄ)');
+      };
+
+      // Helper: fuzzy find position using first N significant words
+      const fuzzyFind = (text, searchStr, afterPos = 0) => {
+        const lowerText = text.toLowerCase();
+        const lowerSearch = searchStr.toLowerCase().replace(/\s+/g, ' ').trim();
+
+        // First try exact match
+        let pos = lowerText.indexOf(lowerSearch, afterPos);
+        if (pos !== -1) return { pos, len: lowerSearch.length, exact: true };
+
+        // Try with ligature-aware regex for exact phrase
+        try {
+          const exactPattern = makeLigaturePattern(lowerSearch);
+          const exactRegex = new RegExp(exactPattern, 'i');
+          const searchArea = lowerText.substring(afterPos);
+          const exactMatch = searchArea.match(exactRegex);
+          if (exactMatch) {
+            return { pos: afterPos + exactMatch.index, len: exactMatch[0].length, exact: true };
+          }
+        } catch (e) {}
+
+        // Try with just first 25 chars
+        const shortSearch = lowerSearch.substring(0, 25).trim();
+        try {
+          const shortPattern = makeLigaturePattern(shortSearch);
+          const shortRegex = new RegExp(shortPattern, 'i');
+          const searchArea = lowerText.substring(afterPos);
+          const shortMatch = searchArea.match(shortRegex);
+          if (shortMatch) {
+            return { pos: afterPos + shortMatch.index, len: shortMatch[0].length, exact: true };
+          }
+        } catch (e) {}
+
+        // Fuzzy: use first 3-4 significant words only
+        const words = searchStr.split(/\s+/).filter(w => w.length >= 4).slice(0, 4);
+        if (words.length < 2) {
+          const shortWords = searchStr.split(/\s+/).filter(w => w.length >= 3).slice(0, 3);
+          if (shortWords.length >= 2) {
+            words.length = 0;
+            words.push(...shortWords);
+          }
+        }
+        if (words.length < 2) return null;
+
+        console.log(`  Fuzzy words: [${words.join(', ')}]`);
+
+        // Build regex pattern with ligature support
+        const pattern = words.map(w => makeLigaturePattern(w.toLowerCase())).join('[\\s\\S]{0,100}');
+        try {
+          const regex = new RegExp(pattern, 'i');
+          const searchArea = lowerText.substring(afterPos);
+          const match = searchArea.match(regex);
+
+          if (match) {
+            return { pos: afterPos + match.index, len: match[0].length, exact: false };
+          }
+        } catch (e) {
+          console.log('Regex error:', e);
+        }
+        return null;
+      };
+
+      // Helper: normalize text by replacing ligatures with normal letters
+      const normalizeLigatures = (text) => {
+        return text
+          .replace(/ﬁ/g, 'fi')
+          .replace(/ﬂ/g, 'fl')
+          .replace(/ﬀ/g, 'ff')
+          .replace(/ﬃ/g, 'ffi')
+          .replace(/ﬄ/g, 'ffl')
+          .replace(/ﬆ/g, 'st');
+      };
+
+      // Helper: find ALL occurrences of a pattern
+      const findAllOccurrences = (text, searchStr, debug = false) => {
+        const results = [];
+        const lowerSearch = searchStr.toLowerCase().replace(/\s+/g, ' ').trim();
+        // Normalize the text to replace ligatures
+        const normalizedText = normalizeLigatures(text);
+
+        if (debug) {
+          console.log(`  findAll: searching for "${lowerSearch.substring(0, 40)}..."`);
+          // Find ALL occurrences of "modi" to see where modification appears
+          if (lowerSearch.includes('modif')) {
+            let idx = 0;
+            let count = 0;
+            while ((idx = normalizedText.indexOf('modi', idx)) !== -1 && count < 5) {
+              console.log(`    "modi" #${count+1} at ${idx}: "${normalizedText.substring(idx, idx + 40)}"`);
+              idx += 4;
+              count++;
+            }
+            // Also show where "cvd" is
+            const cvdIdx = normalizedText.indexOf('cvd');
+            if (cvdIdx !== -1) {
+              console.log(`    "cvd" at ${cvdIdx}: "${normalizedText.substring(cvdIdx - 20, cvdIdx + 30)}"`);
+            }
+          }
+        }
+
+        // Search in NORMALIZED text (ligatures replaced with normal chars)
+        // PDF may split words across spans, so we need flexible matching
+
+        // Helper: create regex that allows optional spaces within words
+        const makeFlexiblePattern = (str) => {
+          // First escape special regex characters
+          const escaped = str.replace(/[-.*+?^${}()|[\]\\]/g, '\\$&');
+          // Insert \s* between each character to handle word splits
+          // But keep real spaces as \s+
+          return escaped.split(' ').map(word =>
+            word.split('').join('\\s*')
+          ).join('\\s+');
+        };
+
+        // Try exact matches first (fast path)
+        let pos = 0;
+        while ((pos = normalizedText.indexOf(lowerSearch, pos)) !== -1) {
+          results.push({ pos, len: lowerSearch.length, exact: true });
+          pos += 1;
+        }
+        if (debug && results.length) console.log(`    exact: ${results.length} matches`);
+
+        // Try flexible pattern (allows spaces within words)
+        if (results.length === 0) {
+          try {
+            const flexPattern = makeFlexiblePattern(lowerSearch);
+            if (debug) console.log(`    flexible pattern: ${flexPattern.substring(0, 60)}...`);
+            const regex = new RegExp(flexPattern, 'gi');
+            let match;
+            while ((match = regex.exec(normalizedText)) !== null) {
+              if (!results.some(r => Math.abs(r.pos - match.index) < 5)) {
+                results.push({ pos: match.index, len: match[0].length, exact: true });
+              }
+            }
+            if (debug) console.log(`    flexible: ${results.length} matches`);
+          } catch (e) { if (debug) console.log(`    flexible error: ${e.message}`); }
+        }
+
+        // Try first 15 chars with flexible pattern
+        const shortSearch = lowerSearch.substring(0, 15).trim();
+        if (shortSearch.length >= 8 && results.length === 0) {
+          try {
+            const flexPattern = makeFlexiblePattern(shortSearch);
+            const regex = new RegExp(flexPattern, 'gi');
+            let match;
+            while ((match = regex.exec(normalizedText)) !== null) {
+              if (!results.some(r => Math.abs(r.pos - match.index) < 5)) {
+                results.push({ pos: match.index, len: match[0].length, exact: false });
+              }
+            }
+            if (debug) console.log(`    short flexible "${shortSearch}": ${results.length} matches`);
+          } catch (e) {}
+        }
+
+        // Fuzzy: handle broken words (like "modi cation" for "modification")
+        // Search for word fragments that may have spaces or missing ligatures
+        if (results.length === 0) {
+          // Clean punctuation from words
+          const words = searchStr.split(/\s+/)
+            .map(w => w.replace(/[^a-zA-Z0-9-]/g, ''))
+            .filter(w => w.length >= 3)
+            .slice(0, 3);
+          if (debug) console.log(`    fuzzy words: [${words.join(', ')}]`);
+
+          // Make pattern that handles broken ligatures: "modification" -> "modi.?\\s*.?cation"
+          const makeRobustPattern = (word) => {
+            const w = word.toLowerCase().replace(/[-.*+?^${}()|[\]\\]/g, '\\$&');
+            // Handle common ligature breaks: fi, fl, ff -> allow space and optional missing char
+            return w
+              .replace(/fi/g, 'f?i?\\s*')  // fi might become "f i", " i", "fi", etc
+              .replace(/fl/g, 'f?l?\\s*')
+              .replace(/ff/g, 'f?f?\\s*');
+          };
+
+          if (words.length >= 2) {
+            const pattern = words.map(w => makeRobustPattern(w)).join('[\\s\\S]{0,100}');
+            if (debug) console.log(`    robust pattern: ${pattern.substring(0, 80)}...`);
+            try {
+              const regex = new RegExp(pattern, 'gi');
+              let match;
+              while ((match = regex.exec(normalizedText)) !== null) {
+                if (!results.some(r => Math.abs(r.pos - match.index) < 10)) {
+                  results.push({ pos: match.index, len: match[0].length, exact: false });
+                }
+              }
+              if (debug) console.log(`    robust matches: ${results.length}`);
+            } catch (e) { if (debug) console.log(`    robust regex error:`, e.message); }
+          }
+        }
+
+        // Last resort: find distinctive word fragment
+        if (results.length === 0) {
+          // For "modification", search for "modi" followed by "cation"
+          // Clean word from punctuation first
+          const firstWord = searchStr.split(/\s+/)
+            .map(w => w.replace(/[^a-zA-Z0-9]/g, ''))
+            .find(w => w.length >= 6);
+          if (firstWord) {
+            const word = firstWord.toLowerCase();
+            // Split at potential ligature points and search
+            const fragments = [word.substring(0, 4)]; // First 4 chars
+            if (word.length > 6) fragments.push(word.substring(word.length - 5)); // Last 5 chars
+
+            if (debug) console.log(`    fragment search: [${fragments.join(', ')}]`);
+
+            const pattern = fragments.map(f => f.replace(/[-.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s\\S]{0,10}');
+            try {
+              const regex = new RegExp(pattern, 'gi');
+              let match;
+              while ((match = regex.exec(normalizedText)) !== null) {
+                if (!results.some(r => Math.abs(r.pos - match.index) < 10)) {
+                  results.push({ pos: match.index, len: match[0].length, exact: false });
+                }
+              }
+              if (debug) console.log(`    fragment matches: ${results.length}`);
+            } catch (e) { if (debug) console.log(`    fragment error: ${e.message}`); }
+          }
+        }
+
+        if (debug) console.log(`    final: ${results.length} matches`);
+
+        return results;
+      };
+
+      // Find all start and end anchor occurrences
+      const startMatches = findAllOccurrences(lowerFullText, lowerStart, true);
+      const endMatches = findAllOccurrences(lowerFullText, lowerEnd, true);
+
+      console.log(`  Found ${startMatches.length} start matches, ${endMatches.length} end matches`);
+
+      // Find best pair: end after start position, minimal distance
+      let bestPair = null;
+      let bestDistance = Infinity;
+      const MAX_DISTANCE = 10000;
+
+      for (const start of startMatches) {
+        for (const end of endMatches) {
+          // End must START after start STARTS (allow overlap)
+          const distance = end.pos - start.pos;
+          if (distance > 0 && distance <= MAX_DISTANCE && distance < bestDistance) {
+            bestDistance = distance;
+            bestPair = { start, end };
+          }
+        }
+      }
+
+      // Fallback: if no valid pair, try with even more relaxed constraints
+      if (!bestPair && startMatches.length > 0 && endMatches.length > 0) {
+        for (const start of startMatches) {
+          for (const end of endMatches) {
+            // Just require end.pos + end.len > start.pos (any overlap is ok)
+            const rangeLen = (end.pos + end.len) - start.pos;
+            if (rangeLen > 10 && rangeLen < bestDistance) {
+              bestDistance = rangeLen;
+              bestPair = { start, end };
+            }
+          }
+        }
+      }
+
+      const startMatch = bestPair?.start || startMatches[0] || null;
+      const endMatch = bestPair?.end || null;
+
+      if (bestPair) {
+        console.log(`  Best pair: distance=${bestDistance} chars`);
+      }
+
+      if (startMatch && endMatch) {
+        const rangeStart = startMatch.pos;
+        const rangeEnd = endMatch.pos + endMatch.len;
+
+        console.log(`✅ Range found: positions ${rangeStart} to ${rangeEnd} (exact: ${startMatch.exact}/${endMatch.exact})`);
+
+        // Highlight all spans in the range
+        let firstMatchedSpan = null;
+        spanMap.forEach(({ start, end, span }) => {
+          const hasOverlap = (start < rangeEnd && end > rangeStart);
+          if (!hasOverlap) return;
+
+          span.classList.add("pdf-hl", "pdf-hl-range");
+          span.style.backgroundColor = 'rgba(250, 180, 0, 0.75)';
+          span.style.boxShadow = '0 0 0 2px rgba(250, 150, 0, 1)';
+
+          if (!firstMatchedSpan) firstMatchedSpan = span;
+        });
+
+        // Scroll to first match
+        if (firstMatchedSpan) {
+          setTimeout(() => {
+            firstMatchedSpan.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 100);
+        }
+        return;
+      } else if (startMatch) {
+        // Fallback: highlight from start to end of paragraph
+        console.log(`⚠️ End anchor not found, highlighting from start`);
+        const rangeStart = startMatch.pos;
+
+        // Find paragraph bounds using existing function
+        const bounds = findParagraphBounds(spanMap, rangeStart, rangeStart + startMatch.len);
+
+        let firstMatchedSpan = null;
+        spanMap.forEach(({ start, end, span }, idx) => {
+          const inParagraph = idx >= bounds.startIdx && idx <= bounds.endIdx;
+          if (!inParagraph) return;
+
+          span.classList.add("pdf-hl", "pdf-hl-range");
+          span.style.backgroundColor = 'rgba(250, 180, 0, 0.75)';
+          span.style.boxShadow = '0 0 0 2px rgba(250, 150, 0, 1)';
+          if (!firstMatchedSpan) firstMatchedSpan = span;
+        });
+
+        if (firstMatchedSpan) {
+          setTimeout(() => {
+            firstMatchedSpan.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 100);
+        }
+        return;
+      } else {
+        console.log(`❌ Start anchor not found, trying word-based search`);
+        // Will fall through to regular search
+      }
+    }
+
+    // Regular search (non-range)
     const searchParts = cleanSearchText(searchText, pageNum);
     if (searchParts.length === 0) return;
 
-    const lowerFullText = fullText.toLowerCase();
     let foundMatch = false;
 
     // Ищем каждую часть
@@ -236,8 +609,8 @@ function PdfViewer({ url, pageNumber, searchText }) {
 
           if (overlapText.length > 2) {
             span.classList.add("pdf-hl");
-            span.style.backgroundColor = 'rgba(250, 204, 21, 0.6)'; // Yellow
-            span.style.boxShadow = '0 0 0 2px rgba(250, 204, 21, 0.8)';
+            span.style.backgroundColor = 'rgba(250, 180, 0, 0.85)'; // Yellow
+            span.style.boxShadow = '0 0 0 3px rgba(250, 150, 0, 1)';
             if (!firstMatchedSpan) firstMatchedSpan = span;
           }
         });
@@ -256,7 +629,11 @@ function PdfViewer({ url, pageNumber, searchText }) {
     // Fallback: если точное совпадение не найдено, ищем по словам
     if (!foundMatch) {
       for (const searchPart of searchParts) {
-        const searchWords = searchPart.toLowerCase().split(/\s+/).filter(w => w.length >= 3);
+        // Clean punctuation from words for better matching
+        const searchWords = searchPart.toLowerCase()
+          .split(/\s+/)
+          .map(w => w.replace(/[^a-z0-9-]/g, ''))  // Remove punctuation
+          .filter(w => w.length >= 3);
         if (searchWords.length < 2) continue;
 
         console.log(`🔍 Fallback: ищем по словам:`, searchWords);
@@ -269,9 +646,9 @@ function PdfViewer({ url, pageNumber, searchText }) {
 
           if (matchCount >= Math.min(2, searchWords.length)) {
             span.classList.add("pdf-hl");
-            span.style.backgroundColor = 'rgba(250, 204, 21, 0.6)';
-            span.style.boxShadow = '0 0 0 2px rgba(250, 204, 21, 0.8)';
-            
+            span.style.backgroundColor = 'rgba(250, 180, 0, 0.85)';
+            span.style.boxShadow = '0 0 0 3px rgba(250, 150, 0, 1)';
+
             if (!firstMatchedSpan) firstMatchedSpan = span;
           }
         });
@@ -360,10 +737,17 @@ function PdfViewer({ url, pageNumber, searchText }) {
         }
         .react-pdf__Page__textContent span.pdf-hl {
           color: transparent !important;
-          background-color: rgba(250, 204, 21, 0.5) !important;
+          background-color: rgba(250, 204, 21, 0.85) !important;
           border-radius: 2px;
+          box-shadow: 0 0 0 2px rgba(250, 204, 21, 1) !important;
         }
-        .pdf-hl {
+        .react-pdf__Page__textContent span.pdf-hl-range {
+          color: transparent !important;
+          background-color: rgba(250, 180, 0, 0.7) !important;
+          border-radius: 0;
+          box-shadow: 0 0 0 1px rgba(250, 180, 0, 0.9) !important;
+        }
+        .pdf-hl, .pdf-hl-range {
           transition: all 0.2s ease;
         }
       `}</style>

@@ -1,26 +1,83 @@
 """
 Document Parser - извлекает текст и метаданные из PDF через Gemini.
 
-Формат вывода Gemini:
+VERSION 2: Category-based extraction with paragraph anchors
+
+Формат вывода Gemini V2:
 [PAGE_START]
 [PAGE_TYPE: clinical|administrative|reference|toc|empty]
-[CODES: E11.9 (ICD-10), J1950 (HCPCS)]
-[TOPICS: topic1, topic2]
-[MEDICATIONS: drug1, drug2]
+[CODE_CATEGORIES: E11% (ICD-10: "start..."..."end"), J195% (HCPCS: "start..."..."end")]
+[TOPICS: "Topic Name" ("start anchor..."..."end anchor")]
+[MEDICATIONS: "drug name" ("start..."..."end")]
 [SKIP: reason if skipped]
 
 ## Content here...
 [PAGE_END]
 
-Parser извлекает метаданные и формирует JSON структуру.
+Key changes from V1:
+- CODE_CATEGORIES: Extract category patterns (E11%) not specific codes (E11.9)
+- TOPICS: Match against predefined topics_dictionary
+- Paragraph anchors: start...end format for better PDF highlighting
 """
 
 import re
 import json
 import hashlib
 from typing import List, Dict, Optional, Tuple
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
+from difflib import SequenceMatcher
+
+
+# ============================================================
+# TEXT SIMILARITY FUNCTIONS
+# ============================================================
+
+def get_signature(text: str, skip_lines: int = 2, length: int = 150) -> str:
+    """
+    Extract unique content signature from text.
+
+    Skips common headers (like "Revision Date...") and returns
+    first N characters of actual content for comparison.
+
+    Args:
+        text: Full text content
+        skip_lines: Number of lines to skip (headers)
+        length: Length of signature to return
+
+    Returns:
+        Normalized signature string
+    """
+    if not text:
+        return ""
+
+    lines = text.strip().split('\n')
+
+    # Skip header lines (usually "Revision Date...", page numbers, etc.)
+    content_lines = lines[skip_lines:] if len(lines) > skip_lines else lines
+    content = '\n'.join(content_lines)
+
+    # Normalize whitespace and take first N chars
+    content = ' '.join(content.split())
+    return content[:length].lower().strip()
+
+
+def similarity(a: str, b: str) -> float:
+    """
+    Calculate similarity ratio between two strings.
+
+    Uses difflib.SequenceMatcher for fuzzy matching.
+
+    Args:
+        a: First string
+        b: Second string
+
+    Returns:
+        Similarity ratio 0.0 to 1.0
+    """
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
 @dataclass
@@ -28,19 +85,32 @@ class CodeInfo:
     code: str
     type: str  # ICD-10, HCPCS, CPT, NDC
     context: Optional[str] = None
-    anchor: Optional[str] = None  # Exact text from document that led to this code
+    anchor: Optional[str] = None  # Exact text from document that led to this code (V1 format)
+    # V2 paragraph anchors
+    anchor_start: Optional[str] = None  # First 5-10 words of paragraph
+    anchor_end: Optional[str] = None  # Last 5-10 words of paragraph
+    reason: Optional[str] = None  # Why this code is relevant
 
 
 @dataclass
 class TopicInfo:
     name: str
-    anchor: Optional[str] = None  # Exact text from document for this topic
+    anchor: Optional[str] = None  # Exact text from document for this topic (V1 format)
+    # V2 paragraph anchors
+    anchor_start: Optional[str] = None  # First 5-10 words of paragraph
+    anchor_end: Optional[str] = None  # Last 5-10 words of paragraph
+    topic_id: Optional[int] = None  # FK to topics_dictionary
+    reason: Optional[str] = None  # Why this topic is relevant
 
 
 @dataclass
 class MedicationInfo:
     name: str
-    anchor: Optional[str] = None  # Exact text from document for this medication
+    anchor: Optional[str] = None  # Exact text from document for this medication (V1 format)
+    # V2 paragraph anchors
+    anchor_start: Optional[str] = None  # First 5-10 words of paragraph
+    anchor_end: Optional[str] = None  # Last 5-10 words of paragraph
+    reason: Optional[str] = None  # Why this medication is relevant
 
 
 @dataclass
@@ -98,14 +168,22 @@ class DocumentData:
                         'type': code_info.type,
                         'pages': [],
                         'contexts': [],
-                        'anchors': []  # List of {page, text} for citation highlighting
+                        'anchors': []  # List of {page, text} or {page, start, end} for citation
                     }
                 if page.page not in all_codes[key]['pages']:
                     all_codes[key]['pages'].append(page.page)
                 if code_info.context:
                     all_codes[key]['contexts'].append(code_info.context)
-                # Add anchor with page info for citation
-                if code_info.anchor:
+                # Add anchor with page info for citation (support both V1 and V2 formats)
+                if code_info.anchor_start and code_info.anchor_end:
+                    # V2 paragraph anchor format
+                    all_codes[key]['anchors'].append({
+                        'page': page.page,
+                        'start': code_info.anchor_start,
+                        'end': code_info.anchor_end
+                    })
+                elif code_info.anchor:
+                    # V1 simple anchor format
                     all_codes[key]['anchors'].append({
                         'page': page.page,
                         'text': code_info.anchor
@@ -113,23 +191,43 @@ class DocumentData:
 
             # Aggregate topics with pages and anchors
             for topic_info in page.topics:
-                # Handle both old format (string) and new format (TopicInfo)
+                # Handle three formats: string, dict (from V2 pipeline), TopicInfo object
                 if isinstance(topic_info, str):
                     name = topic_info
                     anchor = None
+                    anchor_start = None
+                    anchor_end = None
+                    topic_id = None
+                elif isinstance(topic_info, dict):
+                    name = topic_info.get('name')
+                    anchor = topic_info.get('anchor')
+                    anchor_start = topic_info.get('anchor_start')
+                    anchor_end = topic_info.get('anchor_end')
+                    topic_id = topic_info.get('topic_id')
                 else:
                     name = topic_info.name
                     anchor = topic_info.anchor
+                    anchor_start = getattr(topic_info, 'anchor_start', None)
+                    anchor_end = getattr(topic_info, 'anchor_end', None)
+                    topic_id = getattr(topic_info, 'topic_id', None)
 
                 if name not in all_topics:
                     all_topics[name] = {
                         'name': name,
+                        'topic_id': topic_id,
                         'pages': [],
                         'anchors': []
                     }
                 if page.page not in all_topics[name]['pages']:
                     all_topics[name]['pages'].append(page.page)
-                if anchor:
+                # Support both V1 and V2 anchor formats
+                if anchor_start and anchor_end:
+                    all_topics[name]['anchors'].append({
+                        'page': page.page,
+                        'start': anchor_start,
+                        'end': anchor_end
+                    })
+                elif anchor:
                     all_topics[name]['anchors'].append({
                         'page': page.page,
                         'text': anchor
@@ -137,13 +235,22 @@ class DocumentData:
 
             # Aggregate medications with pages and anchors
             for med_info in page.medications:
-                # Handle both old format (string) and new format (MedicationInfo)
+                # Handle three formats: string, dict (from V2 pipeline), MedicationInfo object
                 if isinstance(med_info, str):
                     name = med_info
                     anchor = None
+                    anchor_start = None
+                    anchor_end = None
+                elif isinstance(med_info, dict):
+                    name = med_info.get('name')
+                    anchor = med_info.get('anchor')
+                    anchor_start = med_info.get('anchor_start')
+                    anchor_end = med_info.get('anchor_end')
                 else:
                     name = med_info.name
                     anchor = med_info.anchor
+                    anchor_start = getattr(med_info, 'anchor_start', None)
+                    anchor_end = getattr(med_info, 'anchor_end', None)
 
                 if name not in all_medications:
                     all_medications[name] = {
@@ -153,7 +260,14 @@ class DocumentData:
                     }
                 if page.page not in all_medications[name]['pages']:
                     all_medications[name]['pages'].append(page.page)
-                if anchor:
+                # Support both V1 and V2 anchor formats
+                if anchor_start and anchor_end:
+                    all_medications[name]['anchors'].append({
+                        'page': page.page,
+                        'start': anchor_start,
+                        'end': anchor_end
+                    })
+                elif anchor:
                     all_medications[name]['anchors'].append({
                         'page': page.page,
                         'text': anchor
@@ -546,17 +660,779 @@ def parse_medications_string(meds_str: str) -> List[MedicationInfo]:
     return meds
 
 
+# ============================================================
+# V2 PARSING FUNCTIONS - Paragraph anchors (start...end)
+# ============================================================
+
+def parse_code_categories_string_v2(code_str: str) -> List[CodeInfo]:
+    """
+    Парсит строку CODE_CATEGORIES с paragraph anchors и reason (V2 format):
+
+    Format: PATTERN (TYPE: "start anchor..."..."end anchor" | "reason")
+
+    Example:
+    [CODE_CATEGORIES: E (ICD-10: "GLP-1 receptor agonists"..."glycemic control" | "diabetes treatment")]
+    """
+    codes = []
+    if not code_str or code_str.strip() == '-':
+        return codes
+
+    # Pattern: PATTERN (TYPE: "start..."..."end" | "reason")
+    # Groups: 1=code, 2=type, 3=anchor_start, 4=anchor_end, 5=reason
+    pattern = r'([A-Z0-9\.]+)\s*\(([^:]+):\s*"([^"]+)"(?:\s*\.\.\.\s*"([^"]+)")?(?:\s*\|\s*"([^"]+)")?\)'
+    matches = re.findall(pattern, code_str, re.IGNORECASE)
+
+    for match in matches:
+        code_pattern = match[0].strip().upper()
+        code_type = match[1].strip().upper()
+        anchor_start = match[2].strip() if match[2] else None
+        anchor_end = match[3].strip() if len(match) > 3 and match[3] else None
+        reason = match[4].strip() if len(match) > 4 and match[4] else None
+
+        # Normalize code type
+        if code_type in ['ICD-10', 'ICD10', 'ICD']:
+            code_type = 'ICD-10'
+        elif code_type in ['HCPCS', 'HCPC']:
+            code_type = 'HCPCS'
+        elif code_type in ['CPT', 'CPT-4']:
+            code_type = 'CPT'
+
+        codes.append(CodeInfo(
+            code=code_pattern,
+            type=code_type,
+            context=reason,  # Store reason as context
+            anchor=None,  # V1 format deprecated
+            anchor_start=anchor_start,
+            anchor_end=anchor_end
+        ))
+
+    # Fallback: try V1 format if no V2 matches
+    if not codes:
+        return parse_code_string(code_str)
+
+    return codes
+
+
+def parse_topics_string_v2(topics_str: str) -> List[TopicInfo]:
+    """
+    Парсит строку TOPICS с paragraph anchors (V2 format):
+
+    Format: "Topic Name" ("start anchor..."..."end anchor")
+
+    Example:
+    [TOPICS: "Type 2 Diabetes Mellitus" ("GLP-1 receptor agonists"..."glycemic control"), "GLP-1 Therapy" ("Available agents"..."subcutaneously")]
+    """
+    topics = []
+    if not topics_str or topics_str.strip() == '-':
+        return topics
+
+    # Pattern: "Name" ("start..."..."end")
+    pattern = r'"([^"]+)"\s*\("([^"]+)"(?:\s*\.\.\.\s*"([^"]+)")?\)'
+    matches = re.findall(pattern, topics_str)
+
+    for match in matches:
+        name = match[0].strip()
+        anchor_start = match[1].strip() if match[1] else None
+        anchor_end = match[2].strip() if len(match) > 2 and match[2] else None
+
+        topics.append(TopicInfo(
+            name=name,
+            anchor=None,  # V1 format
+            anchor_start=anchor_start,  # V2 format
+            anchor_end=anchor_end
+        ))
+
+    # Fallback: try V1 format if no V2 matches
+    if not topics:
+        return parse_topics_string(topics_str)
+
+    return topics
+
+
+def parse_medications_string_v2(meds_str: str) -> List[MedicationInfo]:
+    """
+    Парсит строку MEDICATIONS с paragraph anchors (V2 format):
+
+    Format: "drug name" ("start anchor..."..."end anchor")
+
+    Example:
+    [MEDICATIONS: "semaglutide" ("Semaglutide (Ozempic) is"..."weekly injection"), "metformin" ("Prior trial of"..."contraindicated")]
+    """
+    meds = []
+    if not meds_str or meds_str.strip() == '-':
+        return meds
+
+    # Pattern: "Name" ("start..."..."end")
+    pattern = r'"([^"]+)"\s*\("([^"]+)"(?:\s*\.\.\.\s*"([^"]+)")?\)'
+    matches = re.findall(pattern, meds_str)
+
+    for match in matches:
+        name = match[0].strip()
+        anchor_start = match[1].strip() if match[1] else None
+        anchor_end = match[2].strip() if len(match) > 2 and match[2] else None
+
+        meds.append(MedicationInfo(
+            name=name,
+            anchor=None,  # V1 format
+            anchor_start=anchor_start,  # V2 format
+            anchor_end=anchor_end
+        ))
+
+    # Fallback: try V1 format if no V2 matches
+    if not meds:
+        return parse_medications_string(meds_str)
+
+    return meds
+
+
+def parse_page_json_v2(page_obj: dict) -> PageData:
+    """
+    Parse a single page object from JSON response.
+    Content will be set later from original PDF text.
+
+    Args:
+        page_obj: Dict with page, skip, page_type, codes, topics, medications
+
+    Returns:
+        PageData object
+    """
+    page_num = page_obj.get('page', 0)
+    page = PageData(page=page_num, page_type='clinical')
+
+    # Check for skip
+    skip = page_obj.get('skip')
+    if skip:
+        page.skip_reason = skip
+        page.page_type = 'skip'
+        page.content = None
+        return page
+
+    # Page type
+    page_type = page_obj.get('page_type')
+    if page_type:
+        page.page_type = page_type.lower()
+
+    # Parse codes
+    codes_list = page_obj.get('codes', [])
+    page.codes = []
+    for c in codes_list:
+        if isinstance(c, dict):
+            code_type = c.get('type', 'Unknown')
+            # Normalize code type
+            if code_type.upper() in ['ICD-10', 'ICD10', 'ICD']:
+                code_type = 'ICD-10'
+            elif code_type.upper() in ['HCPCS', 'HCPC']:
+                code_type = 'HCPCS'
+            elif code_type.upper() in ['CPT', 'CPT-4']:
+                code_type = 'CPT'
+
+            page.codes.append(CodeInfo(
+                code=c.get('code', ''),
+                type=code_type,
+                context=c.get('reason'),  # Store reason as context for backward compat
+                anchor_start=c.get('anchor_start'),
+                anchor_end=c.get('anchor_end'),
+                reason=c.get('reason')
+            ))
+
+    # Parse topics
+    topics_list = page_obj.get('topics', [])
+    page.topics = []
+    for t in topics_list:
+        if isinstance(t, dict):
+            page.topics.append(TopicInfo(
+                name=t.get('name', ''),
+                anchor_start=t.get('anchor_start'),
+                anchor_end=t.get('anchor_end'),
+                reason=t.get('reason')
+            ))
+
+    # Parse medications
+    meds_list = page_obj.get('medications', [])
+    page.medications = []
+    for m in meds_list:
+        if isinstance(m, dict):
+            page.medications.append(MedicationInfo(
+                name=m.get('name', ''),
+                anchor_start=m.get('anchor_start'),
+                anchor_end=m.get('anchor_end'),
+                reason=m.get('reason')
+            ))
+
+    # Content will be set later from original PDF text
+    page.content = None
+    return page
+
+
+def parse_page_block_v2(block: str, page_num: int) -> PageData:
+    """
+    Parse metadata block from Gemini response (legacy text format).
+    Content will be set later from original PDF text.
+
+    Format:
+    [PAGE_START: N]
+    [SKIP: reason]  OR  [PAGE_TYPE: ...] + metadata
+    [PAGE_END]
+    """
+    page = PageData(page=page_num, page_type='clinical')
+
+    # Extract SKIP reason first - if present, skip all other parsing
+    match = re.search(r'\[SKIP:\s*([^\]]+)\]', block, re.IGNORECASE)
+    if match:
+        page.skip_reason = match.group(1).strip()
+        page.page_type = 'skip'
+        page.content = None
+        return page
+
+    # Extract PAGE_TYPE
+    match = re.search(r'\[PAGE_TYPE:\s*([^\]]+)\]', block, re.IGNORECASE)
+    if match:
+        page.page_type = match.group(1).strip().lower()
+
+    # Extract CODE_CATEGORIES
+    match = re.search(r'\[CODE_CATEGORIES:\s*([^\]]+)\]', block, re.IGNORECASE)
+    if match:
+        page.codes = parse_code_categories_string_v2(match.group(1))
+
+    # Extract TOPICS
+    match = re.search(r'\[TOPICS:\s*([^\]]+)\]', block, re.IGNORECASE)
+    if match:
+        page.topics = parse_topics_string_v2(match.group(1))
+
+    # Extract MEDICATIONS
+    match = re.search(r'\[MEDICATIONS:\s*([^\]]+)\]', block, re.IGNORECASE)
+    if match:
+        page.medications = parse_medications_string_v2(match.group(1))
+
+    # Content will be set later from original PDF text
+    page.content = None
+    return page
+
+
+def validate_and_fix_anchors(
+    page_data: PageData,
+    original_text: str
+) -> Tuple[PageData, List[str]]:
+    """
+    Validate anchors exist in text and repair using word density clustering.
+
+    Algorithm:
+    1. Extract key words from anchor (skip stop words)
+    2. Find positions of each word in text
+    3. Find cluster with highest word density
+    4. Extract phrase from cluster region
+
+    Args:
+        page_data: Parsed page with metadata
+        original_text: Original PDF text for this page
+
+    Returns:
+        (fixed_page_data, warnings)
+    """
+    warnings = []
+    text_lower = original_text.lower()
+
+    # Stop words to skip
+    STOP_WORDS = {'a', 'an', 'the', 'of', 'and', 'or', 'to', 'in', 'for', 'with',
+                  'is', 'are', 'was', 'were', 'be', 'been', 'being', 'that', 'this',
+                  'it', 'its', 'as', 'at', 'by', 'on', 'from'}
+
+    def get_key_words(anchor: str) -> List[str]:
+        """Extract key words from anchor, skip stop words."""
+        words = anchor.lower().split()
+        # Keep words with 3+ chars that aren't stop words
+        return [w for w in words if len(w) >= 3 and w not in STOP_WORDS]
+
+    def find_word_positions(word: str) -> List[int]:
+        """Find all positions of a word in text."""
+        positions = []
+        start = 0
+        word_lower = word.lower()
+
+        while True:
+            idx = text_lower.find(word_lower, start)
+            if idx == -1:
+                break
+            # Check word boundaries
+            before_ok = idx == 0 or not text_lower[idx-1].isalnum()
+            after_ok = idx + len(word) >= len(text_lower) or not text_lower[idx + len(word)].isalnum()
+            if before_ok and after_ok:
+                positions.append(idx)
+            start = idx + 1
+
+        return positions
+
+    def find_density_cluster(key_words: List[str], window_size: int = 200) -> Optional[Tuple[int, int, float]]:
+        """
+        Find region with highest density of key words.
+        Returns (start_pos, end_pos, density_score) or None.
+        """
+        if not key_words:
+            return None
+
+        # Get all word positions
+        all_positions = []  # (position, word)
+        for word in key_words:
+            for pos in find_word_positions(word):
+                all_positions.append((pos, word))
+
+        if not all_positions:
+            return None
+
+        # Sort by position
+        all_positions.sort(key=lambda x: x[0])
+
+        # Sliding window to find densest cluster
+        best_cluster = None
+        best_score = 0
+
+        for i, (start_pos, _) in enumerate(all_positions):
+            # Find all words within window
+            words_in_window = set()
+            end_pos = start_pos
+
+            for pos, word in all_positions[i:]:
+                if pos - start_pos <= window_size:
+                    words_in_window.add(word)
+                    end_pos = pos
+                else:
+                    break
+
+            # Score = fraction of key words found
+            score = len(words_in_window) / len(key_words)
+
+            if score > best_score:
+                best_score = score
+                best_cluster = (start_pos, end_pos, score)
+
+        # Require at least 50% of key words
+        if best_cluster and best_cluster[2] >= 0.5:
+            return best_cluster
+
+        return None
+
+    def extract_phrase_from_cluster(start_pos: int, end_pos: int, target_words: int = 8) -> str:
+        """Extract a clean phrase from the cluster region."""
+        # Expand slightly to get context
+        margin = 20
+        region_start = max(0, start_pos - margin)
+        region_end = min(len(original_text), end_pos + margin + 50)
+
+        # Find word boundaries
+        while region_start > 0 and original_text[region_start].isalnum():
+            region_start -= 1
+        while region_end < len(original_text) and original_text[region_end].isalnum():
+            region_end += 1
+
+        # Extract and clean
+        region = original_text[region_start:region_end].strip()
+
+        # Take first N words
+        words = region.split()[:target_words]
+        return ' '.join(words)
+
+    def find_exact_match(anchor: str) -> Optional[int]:
+        """Find exact match position."""
+        anchor_lower = anchor.lower()
+        idx = text_lower.find(anchor_lower)
+        return idx if idx != -1 else None
+
+    def clean_page_numbers(anchor: str) -> str:
+        """Remove page number patterns like '29 of 121' from anchor start."""
+        # Pattern: "N of M" at start (page numbers from PDF headers/footers)
+        cleaned = re.sub(r'^\d+\s+of\s+\d+\s*', '', anchor, flags=re.IGNORECASE)
+        # Pattern: "Page N" at start
+        cleaned = re.sub(r'^page\s+\d+\s*', '', cleaned, flags=re.IGNORECASE)
+        # Pattern: just page number at start "29 "
+        cleaned = re.sub(r'^\d+\s+(?=[A-Za-z])', '', cleaned)
+        return cleaned.strip()
+
+    def repair_anchor(anchor: str) -> Tuple[Optional[str], str]:
+        """
+        Try to repair anchor using density clustering.
+        Returns (repaired_anchor, repair_note)
+        """
+        if not anchor or len(anchor) < 5:
+            return None, "too short"
+
+        # Clean page numbers from anchor
+        anchor = clean_page_numbers(anchor)
+        if len(anchor) < 5:
+            return None, "too short after cleaning"
+
+        # Strategy 1: Exact match
+        idx = find_exact_match(anchor)
+        if idx is not None:
+            return original_text[idx:idx + len(anchor)], ""
+
+        # Strategy 2: Density clustering
+        key_words = get_key_words(anchor)
+        if len(key_words) < 2:
+            return None, "not enough key words"
+
+        cluster = find_density_cluster(key_words)
+        if cluster:
+            start_pos, end_pos, score = cluster
+            phrase = extract_phrase_from_cluster(start_pos, end_pos)
+            if phrase:
+                return phrase, f"density match ({score:.0%})"
+
+        # Strategy 3: First key word only
+        if key_words:
+            positions = find_word_positions(key_words[0])
+            if positions:
+                idx = positions[0]
+                # Extract a few words starting from this position
+                end = min(len(original_text), idx + 100)
+                words = original_text[idx:end].split()[:6]
+                return ' '.join(words), "first keyword"
+
+        return None, "not found"
+
+    def find_best_pair(
+        start_anchor: str,
+        end_anchor: str
+    ) -> Tuple[Optional[str], Optional[str], List[str]]:
+        """Find and fix anchor pair."""
+        pair_warnings = []
+
+        if not start_anchor and not end_anchor:
+            return None, None, []
+
+        # Clean page numbers BEFORE repair (in case original text has them too)
+        if start_anchor:
+            start_anchor = clean_page_numbers(start_anchor)
+        if end_anchor:
+            end_anchor = clean_page_numbers(end_anchor)
+
+        # Repair each anchor
+        fixed_start, start_note = repair_anchor(start_anchor) if start_anchor else (None, "")
+        fixed_end, end_note = repair_anchor(end_anchor) if end_anchor else (None, "")
+
+        # Clean page numbers from result too (in case found in text with page number)
+        if fixed_start:
+            fixed_start = clean_page_numbers(fixed_start)
+        if fixed_end:
+            fixed_end = clean_page_numbers(fixed_end)
+
+        if not fixed_start and start_anchor:
+            pair_warnings.append(f"anchor_start {start_note}: '{start_anchor[:30]}...'")
+        elif start_note:
+            pair_warnings.append(f"anchor_start {start_note}")
+
+        if not fixed_end and end_anchor:
+            pair_warnings.append(f"anchor_end {end_note}: '{end_anchor[:30]}...'")
+        elif end_note:
+            pair_warnings.append(f"anchor_end {end_note}")
+
+        # Verify end comes after start
+        if fixed_start and fixed_end:
+            start_idx = find_exact_match(fixed_start)
+            end_idx = find_exact_match(fixed_end)
+
+            if start_idx is not None and end_idx is not None:
+                if end_idx < start_idx:
+                    pair_warnings.append("swapped order")
+
+        return fixed_start, fixed_end, pair_warnings
+
+    def fix_item_anchors(item, item_type: str):
+        """Fix anchors for a single item."""
+        start = getattr(item, 'anchor_start', None)
+        end = getattr(item, 'anchor_end', None)
+
+        if not start and not end:
+            return
+
+        fixed_start, fixed_end, pair_warnings = find_best_pair(start, end)
+
+        for w in pair_warnings:
+            warnings.append(f"Page {page_data.page} {item_type}: {w}")
+
+        if hasattr(item, 'anchor_start'):
+            item.anchor_start = fixed_start
+        if hasattr(item, 'anchor_end'):
+            item.anchor_end = fixed_end
+
+    # Validate all items
+    for code in (page_data.codes or []):
+        fix_item_anchors(code, f"code {code.code}")
+
+    for topic in (page_data.topics or []):
+        name = topic.name if hasattr(topic, 'name') else str(topic)
+        fix_item_anchors(topic, f"topic '{name}'")
+
+    for med in (page_data.medications or []):
+        name = med.name if hasattr(med, 'name') else str(med)
+        fix_item_anchors(med, f"med '{name}'")
+
+    return page_data, warnings
+
+
+@dataclass
+class ChunkParseResult:
+    """Result of parsing a chunk with validation info."""
+    pages: List[PageData]
+    trusted_count: int
+    remapped_count: int
+    dropped_count: int
+    warnings: List[str]
+
+
+def extract_json_from_response(response_text: str) -> Optional[list]:
+    """
+    Extract JSON array from Gemini response.
+    Handles cases where response may have markdown code blocks or extra text.
+    """
+    text = response_text.strip()
+
+    # Try to find JSON array directly
+    # Look for [ ... ] pattern
+    start_idx = text.find('[')
+    if start_idx == -1:
+        return None
+
+    # Find matching closing bracket
+    bracket_count = 0
+    end_idx = -1
+    for i, char in enumerate(text[start_idx:], start_idx):
+        if char == '[':
+            bracket_count += 1
+        elif char == ']':
+            bracket_count -= 1
+            if bracket_count == 0:
+                end_idx = i
+                break
+
+    if end_idx == -1:
+        return None
+
+    json_str = text[start_idx:end_idx + 1]
+
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print(f"⚠ JSON parse error: {e}")
+        # Try to fix common issues
+        # Remove trailing commas before ] or }
+        json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            return None
+
+
+def parse_chunk_response_v2(
+    response_text: str,
+    original_pages: Dict[int, str],
+    start_page: int,
+    expected_count: int
+) -> ChunkParseResult:
+    """
+    Parse metadata from Gemini response (JSON format).
+    Content comes from original PDF, not from Gemini.
+
+    Args:
+        response_text: Raw response from Gemini (JSON array)
+        original_pages: Dict mapping page_num -> original text from PDF
+        start_page: Starting page number for this chunk
+        expected_count: Expected number of pages
+
+    Returns:
+        ChunkParseResult with pages and warnings
+    """
+    warnings = []
+    pages = []
+    useful_count = 0
+
+    # Try JSON parsing first
+    json_data = extract_json_from_response(response_text)
+
+    if json_data and isinstance(json_data, list):
+        # JSON format - new path
+        for i, page_obj in enumerate(json_data):
+            if not isinstance(page_obj, dict):
+                warnings.append(f"Invalid page object at index {i}")
+                continue
+
+            # Parse page from JSON
+            page_data = parse_page_json_v2(page_obj)
+
+            # Ensure page number is set
+            if page_data.page == 0:
+                page_data.page = start_page + i
+
+            page_num = page_data.page
+
+            # Set content from original PDF (not from Gemini)
+            if page_num in original_pages and not page_data.skip_reason:
+                page_data.content = original_pages[page_num]
+                useful_count += 1
+
+                # Validate and fix anchors against original text
+                page_data, anchor_warnings = validate_and_fix_anchors(
+                    page_data, original_pages[page_num]
+                )
+                warnings.extend(anchor_warnings)
+
+            pages.append(page_data)
+    else:
+        # Fallback to legacy text format parsing
+        warnings.append("JSON parse failed, using legacy text format")
+        pattern = r'\[PAGE_START(?::\s*(\d+))?\](.*?)\[PAGE_END\]'
+        matches = re.findall(pattern, response_text, re.DOTALL)
+
+        for i, (claimed_str, block_content) in enumerate(matches):
+            # Get page number
+            if claimed_str:
+                page_num = int(claimed_str)
+            else:
+                page_num = start_page + i
+
+            # Parse metadata from block
+            page_data = parse_page_block_v2(block_content, page_num)
+
+            # Set content from original PDF (not from Gemini)
+            if page_num in original_pages and not page_data.skip_reason:
+                page_data.content = original_pages[page_num]
+                useful_count += 1
+
+                # Validate and fix anchors against original text
+                page_data, anchor_warnings = validate_and_fix_anchors(
+                    page_data, original_pages[page_num]
+                )
+                warnings.extend(anchor_warnings)
+
+            pages.append(page_data)
+
+    # Check for missing pages (warning only)
+    parsed_nums = {p.page for p in pages}
+    missing = set(original_pages.keys()) - parsed_nums
+    if missing:
+        warnings.append(f"Missing pages: {sorted(missing)}")
+
+    return ChunkParseResult(
+        pages=pages,
+        trusted_count=useful_count,
+        remapped_count=0,
+        dropped_count=0,
+        warnings=warnings
+    )
+
+
+@dataclass
+class DocumentValidationResult:
+    """Result of full document validation."""
+    valid: bool
+    total_pages: int
+    content_ok: int
+    content_mismatch: int
+    duplicates_found: int
+    missing_pages: List[int]
+    extra_pages: List[int]
+    issues: List[str]
+
+
+def validate_document(
+    final_pages: Dict[int, PageData],
+    original_pages: Dict[int, str]
+) -> DocumentValidationResult:
+    """
+    Final validation of entire document after all chunks processed.
+
+    Checks:
+    1. Content correctness - each page matches original
+    2. Duplicate detection - same content on different pages
+    3. Coverage - all original pages present, no extra pages
+
+    Args:
+        final_pages: Dict mapping page_num -> PageData (parsed result)
+        original_pages: Dict mapping page_num -> original text from PDF
+
+    Returns:
+        DocumentValidationResult with detailed validation info
+    """
+    issues = []
+    content_ok = 0
+    content_mismatch = 0
+
+    # ══════════════════════════════════════════════
+    # 1. Check content correctness for each page
+    # ══════════════════════════════════════════════
+    for page_num, page_data in final_pages.items():
+        if page_num not in original_pages:
+            issues.append(f"Page {page_num}: no original to compare")
+            continue
+
+        # Skip empty/skipped pages
+        if not page_data.content:
+            content_ok += 1
+            continue
+
+        page_sig = get_signature(page_data.content)
+        orig_sig = get_signature(original_pages[page_num])
+        score = similarity(page_sig, orig_sig)
+
+        if score >= 0.7:
+            content_ok += 1
+        else:
+            content_mismatch += 1
+            issues.append(f"Page {page_num}: content mismatch (score={score:.2f})")
+
+    # ══════════════════════════════════════════════
+    # 2. Find duplicates by content similarity
+    # ══════════════════════════════════════════════
+    duplicates_found = 0
+    pages_list = [(pn, pd) for pn, pd in final_pages.items() if pd.content]
+
+    for i, (page_num1, data1) in enumerate(pages_list):
+        sig1 = get_signature(data1.content)
+        for page_num2, data2 in pages_list[i + 1:]:
+            sig2 = get_signature(data2.content)
+            score = similarity(sig1, sig2)
+            if score > 0.9:  # Nearly identical content
+                duplicates_found += 1
+                issues.append(
+                    f"Duplicate content: pages {page_num1} and {page_num2} (score={score:.2f})"
+                )
+
+    # ══════════════════════════════════════════════
+    # 3. Check coverage
+    # ══════════════════════════════════════════════
+    missing_pages = sorted(set(original_pages.keys()) - set(final_pages.keys()))
+    extra_pages = sorted(set(final_pages.keys()) - set(original_pages.keys()))
+
+    if missing_pages:
+        issues.append(f"Missing pages: {missing_pages}")
+    if extra_pages:
+        issues.append(f"Extra pages: {extra_pages}")
+
+    # ══════════════════════════════════════════════
+    # Build result
+    # ══════════════════════════════════════════════
+    return DocumentValidationResult(
+        valid=len(issues) == 0,
+        total_pages=len(final_pages),
+        content_ok=content_ok,
+        content_mismatch=content_mismatch,
+        duplicates_found=duplicates_found,
+        missing_pages=missing_pages,
+        extra_pages=extra_pages,
+        issues=issues
+    )
+
+
 def parse_page_block(block: str, page_num: int) -> PageData:
     """
-    Парсит блок одной страницы и извлекает метаданные.
-    
+    Парсит блок одной страницы и извлекает метаданные (V1 format).
+
     Формат:
     [PAGE_START]
     [PAGE_TYPE: clinical]
     [CODES: E11.9 (ICD-10), J1950 (HCPCS)]
     [TOPICS: GLP-1 indications, metformin failure]
     [MEDICATIONS: semaglutide, dulaglutide]
-    
+
     ## Content here...
     [PAGE_END]
     """
@@ -974,10 +1850,220 @@ Output EXACTLY {pages_count} [PAGE_START]...[PAGE_END] blocks.
 
 
 def get_chunk_prompt(pages_count: int, start_page: int) -> str:
-    """Генерирует prompt для chunk extraction"""
+    """Генерирует prompt для chunk extraction (V1)"""
     return CHUNK_EXTRACTION_PROMPT.format(
         pages_count=pages_count,
         start_page=start_page
+    )
+
+
+# ============================================================
+# V2 PROMPT TEMPLATE - JSON format extraction
+# ============================================================
+
+CHUNK_EXTRACTION_PROMPT_V2 = """Extract ONLY metadata from these {pages_count} PDF pages.
+Return a JSON array with one object per page.
+
+=== JSON OUTPUT FORMAT ===
+
+[
+  {{
+    "page": 1,
+    "skip": "TOC",
+    "page_type": null,
+    "codes": [],
+    "topics": [],
+    "medications": []
+  }},
+  {{
+    "page": 2,
+    "skip": null,
+    "page_type": "clinical",
+    "codes": [
+      {{
+        "code": "E",
+        "type": "ICD-10",
+        "anchor_start": "GLP-1 receptor agonists are indicated",
+        "anchor_end": "for the treatment of type 2 diabetes",
+        "reason": "diabetes treatment guidelines"
+      }}
+    ],
+    "topics": [
+      {{
+        "name": "Type 2 Diabetes Mellitus",
+        "anchor_start": "indicated for adults with type 2",
+        "anchor_end": "who have inadequate glycemic control",
+        "reason": "primary condition discussed"
+      }}
+    ],
+    "medications": [
+      {{
+        "name": "semaglutide",
+        "anchor_start": "Semaglutide (Ozempic) is administered",
+        "anchor_end": "once weekly by subcutaneous injection",
+        "reason": "GLP-1 agonist drug mentioned"
+      }}
+    ]
+  }}
+]
+
+=== FIELD TYPES ===
+
+page: integer (page number starting from {start_page})
+skip: string | null ("TOC", "References", "Acknowledgments", "Release notes", "Title page", "Blank", or null)
+page_type: string | null ("clinical" or "administrative", null if skipped)
+codes: array of objects
+  - code: string (single letter/digit category: E, F, I, J, 9)
+  - type: string ("ICD-10", "HCPCS", "CPT", or "NDC")
+  - anchor_start: string | null (first 6-10 words of paragraph, VERBATIM)
+  - anchor_end: string | null (last 6-10 words of same paragraph, VERBATIM)
+  - reason: string (MANDATORY - why this code is relevant)
+topics: array of objects
+  - name: string (topic name from dictionary)
+  - anchor_start: string | null
+  - anchor_end: string | null
+  - reason: string (MANDATORY)
+medications: array of objects
+  - name: string (drug name as mentioned: semaglutide, Ozempic, metformin)
+  - anchor_start: string | null
+  - anchor_end: string | null
+  - reason: string (MANDATORY)
+
+=== SKIP PAGES ===
+
+Set "skip" field for: Table of Contents, Index, References, Bibliography,
+Acknowledgments, Release notes, Changelog, Copyright page, Title page, Blank pages.
+When skip is set, leave codes/topics/medications as empty arrays [].
+
+=== ANCHOR RULES ===
+
+Anchors are SEARCH STRINGS. Ctrl+F must find EXACT match in page text!
+- anchor_start = first 6-10 words of relevant paragraph, VERBATIM
+- anchor_end = last 6-10 words of SAME paragraph, VERBATIM
+- Copy character-by-character - no paraphrasing, no adding words!
+- If cannot find exact phrase → set to null
+
+=== CODE CATEGORIES ===
+
+{meta_categories}
+
+Use SINGLE LETTER/DIGIT for "code" field: E, F, I, J, 9 (NOT E11, F32, J1950)
+Match by MEANING: "diabetes" → E, "depression" → F, "injectable" → J
+
+=== TOPICS DICTIONARY ===
+
+{topics_dictionary}
+
+ONLY use topic names from this dictionary. Skip unlisted topics.
+
+=== MEDICATIONS ===
+
+Extract SPECIFIC drug names mentioned in the text:
+- Generic names: semaglutide, metformin, dulaglutide, insulin, aspirin
+- Brand names: Ozempic, Trulicity, Victoza, Byetta, Januvia
+- Drug classes when specific: GLP-1 receptor agonists, SGLT2 inhibitors, DPP-4 inhibitors
+
+DO NOT extract:
+- General terms: "medication", "drug", "therapy", "treatment"
+- Code-only references: "J1950" without drug name
+
+Examples of what TO extract:
+- "semaglutide (Ozempic)" → name: "semaglutide"
+- "metformin is contraindicated" → name: "metformin"
+- "GLP-1 receptor agonists such as dulaglutide" → name: "dulaglutide"
+
+=== OUTPUT ===
+
+Return ONLY valid JSON array. No markdown code blocks. No explanations.
+Array must have EXACTLY {pages_count} objects, one per page.
+"""
+
+
+def load_meta_categories_from_json(json_path: str = None) -> dict:
+    """Load meta-categories from JSON file."""
+    import json as json_module
+    from pathlib import Path
+
+    if json_path is None:
+        # Default path
+        json_path = Path(__file__).parent.parent.parent / "data" / "seed" / "meta_categories.json"
+
+    with open(json_path, 'r', encoding='utf-8') as f:
+        return json_module.load(f)
+
+
+def format_meta_categories_for_prompt(meta_cats: dict) -> str:
+    """Format meta-categories dictionary for injection into prompt."""
+    lines = []
+
+    for code_type, type_data in meta_cats.items():
+        lines.append(f"\n[{code_type}] - {type_data.get('description', '')}")
+
+        for meta_key, cat_data in type_data.get('categories', {}).items():
+            name = cat_data.get('name', '')
+            range_str = cat_data.get('range', '')
+            includes = cat_data.get('includes', [])
+
+            # Format: "E (E00-E89): Endocrine, nutritional... - diabetes, thyroid, obesity"
+            includes_str = ', '.join(includes[:4]) if includes else ''
+            lines.append(f"  {meta_key} ({range_str}): {name}")
+            if includes_str:
+                lines.append(f"      includes: {includes_str}")
+
+    return '\n'.join(lines)
+
+
+def format_topics_for_prompt(topics: list) -> str:
+    """Format topics dictionary for injection into prompt."""
+    lines = []
+    by_category = {}
+
+    for topic in topics:
+        cat = topic.get('category', 'other')
+        if cat not in by_category:
+            by_category[cat] = []
+        by_category[cat].append(topic)
+
+    for category in sorted(by_category.keys()):
+        lines.append(f"\n[{category.upper()}]")
+        for topic in by_category[category]:
+            name = topic['name']
+            aliases = topic.get('aliases', [])
+            if aliases:
+                aliases_str = ', '.join(aliases[:3])  # Limit to 3 aliases
+                lines.append(f"- {name} (aliases: {aliases_str})")
+            else:
+                lines.append(f"- {name}")
+
+    return '\n'.join(lines)
+
+
+def get_chunk_prompt_v2(
+    pages_count: int,
+    start_page: int,
+    topics: list,
+    meta_categories: dict = None
+) -> str:
+    """
+    Генерирует prompt для chunk extraction V2 (category-based).
+
+    Args:
+        pages_count: Number of pages in this chunk
+        start_page: Starting page number
+        topics: List of topics from topics_dictionary
+        meta_categories: Meta-categories dict (loaded from JSON if None)
+    """
+    if meta_categories is None:
+        meta_categories = load_meta_categories_from_json()
+
+    topics_str = format_topics_for_prompt(topics)
+    meta_cats_str = format_meta_categories_for_prompt(meta_categories)
+
+    return CHUNK_EXTRACTION_PROMPT_V2.format(
+        pages_count=pages_count,
+        start_page=start_page,
+        topics_dictionary=topics_str,
+        meta_categories=meta_cats_str
     )
 
 

@@ -303,7 +303,7 @@ const CodeItem = ({ code, isSelected, canSelect, generating, onToggleCode, onDel
               )}
               {/* Regenerate button */}
               <button
-                onClick={(e) => { e.stopPropagation(); onGenerate?.(code.code); }}
+                onClick={(e) => { e.stopPropagation(); onGenerate?.(code.code, true); }}
                 disabled={generating}
                 className="px-2 py-1.5 text-xs rounded flex items-center gap-1 transition-colors"
                 style={{
@@ -1389,8 +1389,8 @@ export default function RuleGeneration() {
   };
 
   // Generate a single rule (used by parallel processor)
-  const generateSingleRule = async (code) => {
-    console.log(`[Guideline] Starting generation for: ${code}`);
+  const generateSingleRule = async (code, forceRegenerate = false) => {
+    console.log(`[Guideline] Starting generation for: ${code}`, forceRegenerate ? '(force)' : '');
 
     // Mark as generating (preserve any existing data)
     setGenerationProgress(prev => ({
@@ -1411,7 +1411,8 @@ export default function RuleGeneration() {
         body: JSON.stringify({
           code,
           code_type: 'ICD-10',
-          parallel_validators: true
+          parallel_validators: true,
+          force_regenerate: forceRegenerate
         })
       });
 
@@ -1457,11 +1458,57 @@ export default function RuleGeneration() {
           }
 
           setGenerationProgress(prev => {
-            const prevCode = prev[code] || { status: 'generating', steps: {} };
+            const prevCode = prev[code] || { status: 'generating', steps: {}, cascade: null };
             const prevStep = prevCode.steps[step] || { status: 'idle', thinking: '', content: '' };
             let updatedStep = { ...prevStep };
+            let updatedCascade = prevCode.cascade;
 
             switch (type) {
+              // Cascade events (from HierarchyRuleGenerator)
+              case 'plan':
+                updatedCascade = {
+                  patterns_to_generate: data.patterns_to_generate || [],
+                  existing_patterns: data.existing_patterns || [],
+                  current_index: 0,
+                  current_pattern: null
+                };
+                updatedStep.status = 'planning';
+                updatedStep.message = data.content;
+                break;
+              case 'generating':
+                if (updatedCascade) {
+                  const idx = updatedCascade.patterns_to_generate.indexOf(data.pattern);
+                  updatedCascade = {
+                    ...updatedCascade,
+                    current_index: idx >= 0 ? idx : updatedCascade.current_index,
+                    current_pattern: data.pattern,
+                    parent_rule: data.parent_rule
+                  };
+                }
+                // Reset all step outputs for new code in cascade
+                prevCode.steps = {
+                  draft: { status: 'idle', thinking: '', content: '' },
+                  mentor: { status: 'idle', thinking: '', content: '' },
+                  redteam: { status: 'idle', thinking: '', content: '' },
+                  arbitration: { status: 'idle', thinking: '', content: '' },
+                  finalization: { status: 'idle', thinking: '', content: '' }
+                };
+                updatedStep.status = 'streaming';
+                updatedStep.message = data.content;
+                break;
+              case 'exists':
+              case 'skip':
+                updatedStep.status = 'done';
+                updatedStep.message = data.content;
+                break;
+              case 'complete':
+                updatedStep.status = 'done';
+                updatedStep.message = data.content;
+                if (updatedCascade) {
+                  updatedCascade.current_index = updatedCascade.patterns_to_generate.length;
+                }
+                break;
+              // Standard pipeline events
               case 'status':
                 updatedStep.status = data.status || 'streaming';
                 if (data.message) updatedStep.message = data.message;
@@ -1487,13 +1534,13 @@ export default function RuleGeneration() {
                 break;
               case 'error':
                 updatedStep.status = 'error';
-                updatedStep.error = data.message;
+                updatedStep.error = data.message || data.content;
                 break;
             }
 
             return {
               ...prev,
-              [code]: { ...prevCode, steps: { ...prevCode.steps, [step]: updatedStep } }
+              [code]: { ...prevCode, cascade: updatedCascade, steps: { ...prevCode.steps, [step]: updatedStep } }
             };
           });
         }
@@ -1518,7 +1565,7 @@ export default function RuleGeneration() {
   };
 
   // Generate rules for given codes (batch or single) - parallel with concurrency limit
-  const generateRules = async (codes, concurrency = 5) => {
+  const generateRules = async (codes, concurrency = 5, forceRegenerate = false) => {
     if (codes.length === 0) return;
 
     setGenerating(true);
@@ -1546,7 +1593,7 @@ export default function RuleGeneration() {
         const index = currentIndex++;
         const code = codes[index];
         if (code) {
-          await generateSingleRule(code);
+          await generateSingleRule(code, forceRegenerate);
         }
       }
     };
@@ -1567,8 +1614,8 @@ export default function RuleGeneration() {
   };
 
   // Single code generation (from individual Generate button)
-  const handleGenerateSingle = (code) => {
-    generateRules([code]);
+  const handleGenerateSingle = (code, forceRegenerate = false) => {
+    generateRules([code], 5, forceRegenerate);
   };
 
   // Batch generation (from header Generate button)

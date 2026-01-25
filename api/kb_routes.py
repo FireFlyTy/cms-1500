@@ -21,12 +21,21 @@ from google.genai import types
 
 from src.parsers.document_parser import (
     parse_chunk_response,
+    parse_chunk_response_v2,
     merge_chunk_results,
     build_document_data,
     save_document_files,
     get_chunk_prompt,
+    get_chunk_prompt_v2,
     PageData,
-    DocumentData
+    DocumentData,
+    load_meta_categories_from_json
+)
+from src.parsers.multi_model_pipeline import (
+    run_extraction_pipeline,
+    run_extraction_pipeline_streaming,
+    load_topics_from_db,
+    parse_pipeline_result
 )
 from src.db.connection import get_db_connection
 
@@ -126,6 +135,68 @@ def normalize_code_type(code: str, raw_type: str) -> str:
         return 'NDC'
     
     return 'Unknown'
+
+
+# Cache for meta_categories
+_meta_categories_cache = None
+
+def get_meta_categories():
+    """Load meta_categories.json (cached)."""
+    global _meta_categories_cache
+    if _meta_categories_cache is None:
+        _meta_categories_cache = load_meta_categories_from_json()
+    return _meta_categories_cache
+
+
+def get_category_description(pattern: str, code_type: str) -> Optional[str]:
+    """Look up category description from meta_categories.json.
+
+    Args:
+        pattern: Code pattern like 'E', 'J', '9', 'E11', '00'
+        code_type: 'ICD-10', 'CPT', 'HCPCS'
+
+    Returns:
+        Description string or None
+    """
+    if not pattern:
+        return None
+
+    meta_categories = get_meta_categories()
+
+    type_map = {
+        'ICD-10': 'ICD-10',
+        'CPT': 'CPT',
+        'HCPCS': 'HCPCS',
+        'NDC': 'NDC'
+    }
+
+    mc_key = type_map.get(code_type)
+    if not mc_key or mc_key not in meta_categories:
+        return None
+
+    categories = meta_categories[mc_key].get('categories', {})
+
+    # Determine category key
+    # CPT: check for "00" (Anesthesia) first, then single digit
+    # ICD-10/HCPCS: first letter
+    if code_type == 'CPT':
+        # Check if pattern starts with "0" - could be Anesthesia (00xxx)
+        if pattern.startswith('0') and '00' in categories:
+            cat_key = '00'
+        else:
+            cat_key = pattern[0]
+    else:
+        cat_key = pattern[0].upper()
+
+    if cat_key in categories:
+        cat_info = categories[cat_key]
+        name = cat_info.get('name', '')
+        range_str = cat_info.get('range', '')
+        if name and range_str:
+            return f"{name} ({range_str})"
+        return name or range_str
+
+    return None
 
 
 # ============================================================
@@ -302,67 +373,58 @@ async def parse_pdf_with_metadata(
         file_hash: str,
         progress_callback=None
 ) -> DocumentData:
-    """Парсит PDF и извлекает метаданные"""
+    """Парсит PDF используя V2 pipeline с JSON форматом."""
+    import fitz  # PyMuPDF
 
-    reader = PdfReader(io.BytesIO(file_bytes))
-    total_pages = len(reader.pages)
+    # Extract text from PDF using fitz (not Gemini vision)
+    pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
+    total_pages = len(pdf_doc)
+    pdf_text_chunks = []
+    for page in pdf_doc:
+        pdf_text_chunks.append(page.get_text())
+    pdf_doc.close()
 
-    print(f"[PARSER] Starting: {filename} ({total_pages} pages)")
+    print(f"[PARSER] Starting V2: {filename} ({total_pages} pages)")
 
-    semaphore = asyncio.Semaphore(PARALLEL_LIMIT)
-    pages_completed = 0
+    # Load topics and meta-categories
+    topics = load_topics_from_db()
+    meta_categories = load_meta_categories_from_json()
 
-    async def track_chunk(coro, chunk_size):
-        nonlocal pages_completed
-        result = await coro
-        pages_completed += chunk_size
-        if progress_callback:
-            await progress_callback(
-                status="parsing",
-                pages_done=pages_completed,
-                total_pages=total_pages
-            )
-        return result
+    # Run V2 pipeline (JSON format with anchors)
+    result = await run_extraction_pipeline(
+        pdf_text_chunks=pdf_text_chunks,
+        topics=topics,
+        meta_categories=meta_categories,
+        skip_critic=True,
+        skip_fix=True,
+        chunk_size=1,  # One page at a time for accuracy
+        parallel_limit=30
+    )
 
-    # Create chunk tasks
-    tasks = []
-    for i in range(0, total_pages, CHUNK_SIZE):
-        writer = PdfWriter()
-        chunk_pages = reader.pages[i:i + CHUNK_SIZE]
-        for page in chunk_pages:
-            writer.add_page(page)
+    # Parse result
+    pages_data = parse_pipeline_result(result)
 
-        chunk_buffer = io.BytesIO()
-        writer.write(chunk_buffer)
-
-        task = process_pdf_chunk(
-            chunk_buffer.getvalue(),
-            i // CHUNK_SIZE,
-            i + 1,  # 1-indexed
-            len(chunk_pages),
-            semaphore
+    # Progress callback
+    if progress_callback:
+        await progress_callback(
+            status="parsing",
+            pages_done=total_pages,
+            total_pages=total_pages
         )
-        tasks.append(track_chunk(task, len(chunk_pages)))
-
-    # Execute all
-    all_results = await asyncio.gather(*tasks)
-
-    # Merge results
-    all_pages = merge_chunk_results(all_results)
 
     # Build document
     doc = build_document_data(
         file_hash=file_hash,
         filename=filename,
         total_pages=total_pages,
-        pages=all_pages
+        pages=pages_data
     )
 
     # Save files
     os.makedirs(DOCUMENTS_DIR, exist_ok=True)
     txt_path, json_path = save_document_files(doc, DOCUMENTS_DIR)
 
-    print(f"[PARSER] ✓ Completed: {len(doc.summary['content_pages'])} content pages")
+    print(f"[PARSER] ✓ Completed V2: {len(doc.summary['content_pages'])} content pages")
 
     return doc
 
@@ -425,10 +487,13 @@ def save_document_to_db(doc: DocumentData, filepath: str):
             # Insert aggregated codes with page_numbers as JSON
             for code, data in code_pages.items():
                 pages_json = json.dumps(sorted(data['pages']))
-                description = ', '.join(data['contexts'][:3])[:200]  # First 3 contexts
-                
+                # Get description from meta_categories, fallback to contexts
+                description = get_category_description(code, data['type'])
+                if not description and data['contexts']:
+                    description = ', '.join(data['contexts'][:3])[:200]
+
                 cursor.execute("""
-                    INSERT OR IGNORE INTO document_codes 
+                    INSERT OR IGNORE INTO document_codes
                     (document_id, code_pattern, code_type, description, page_numbers)
                     VALUES (?, ?, ?, ?, ?)
                 """, (
@@ -521,8 +586,11 @@ async def list_documents() -> List[DocumentResponse]:
         if doc_json:
             summary = doc_json.get('summary', {})
             content_pages = summary.get('content_page_count', 0)
-            topics = summary.get('topics', [])
-            medications = summary.get('medications', [])
+            # Handle both old (dict) and new (list) formats
+            raw_topics = summary.get('topics', [])
+            raw_meds = summary.get('medications', [])
+            topics = raw_topics if isinstance(raw_topics, list) else list(raw_topics.values()) if raw_topics else []
+            medications = raw_meds if isinstance(raw_meds, list) else list(raw_meds.values()) if raw_meds else []
 
         documents.append(DocumentResponse(
             id=doc_id,
@@ -546,6 +614,26 @@ async def list_documents() -> List[DocumentResponse]:
     return documents
 
 
+def normalize_anchors(obj):
+    """Normalize anchor_start/anchor_end to start/end format"""
+    if isinstance(obj, dict):
+        result = {}
+        for key, value in obj.items():
+            if key == 'anchor_start':
+                result['start'] = value
+            elif key == 'anchor_end':
+                result['end'] = value
+            elif key == 'anchors' and isinstance(value, list):
+                result['anchors'] = [normalize_anchors(a) for a in value]
+            else:
+                result[key] = normalize_anchors(value)
+        return result
+    elif isinstance(obj, list):
+        return [normalize_anchors(item) for item in obj]
+    else:
+        return obj
+
+
 @router.get("/documents/{doc_id}")
 async def get_document(doc_id: str):
     """Получить документ с полными данными"""
@@ -554,7 +642,9 @@ async def get_document(doc_id: str):
     if not doc_json:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    return doc_json
+    # Normalize anchor format for frontend compatibility
+    normalized = normalize_anchors(doc_json)
+    return normalized
 
 
 @router.get("/documents/{doc_id}/text")
@@ -1041,16 +1131,16 @@ async def list_codes() -> List[CodeIndexItem]:
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Get all codes with document count - GROUP BY only code_pattern to avoid duplicates
+    # Get all codes with document count - GROUP BY code_pattern AND code_type
     try:
         cursor.execute("""
-            SELECT 
-                dc.code_pattern, 
+            SELECT
+                dc.code_pattern,
                 dc.code_type,
                 COUNT(DISTINCT dc.document_id) as doc_count
             FROM document_codes dc
-            GROUP BY dc.code_pattern
-            ORDER BY dc.code_pattern
+            GROUP BY dc.code_pattern, dc.code_type
+            ORDER BY dc.code_type, dc.code_pattern
         """)
     except:
         conn.close()
@@ -1118,22 +1208,47 @@ async def get_code_details(code: str):
         # Try to use page_numbers from database first
         if page_numbers_json:
             try:
-                page_nums = json.loads(page_numbers_json)
-                # Get content preview from JSON only for display
+                # Try JSON first, then comma-separated
+                if page_numbers_json.startswith('['):
+                    page_nums = json.loads(page_numbers_json)
+                else:
+                    page_nums = [int(p.strip()) for p in page_numbers_json.split(',') if p.strip()]
+                # Get content preview and anchors from JSON
                 doc_json = load_document_json(doc_id)
                 page_content_map = {}
+                code_anchors_map = {}  # page -> anchor
+
                 if doc_json:
                     for page in doc_json.get('pages', []):
-                        page_content_map[page.get('page')] = {
+                        page_num = page.get('page')
+                        page_content_map[page_num] = {
                             'content': page.get('content', '')[:200] if page.get('content') else None,
                             'topics': page.get('topics', [])
                         }
-                
+                        # Find anchor for this code on this page
+                        for page_code in page.get('codes', []):
+                            page_code_normalized = normalize_code_pattern(page_code.get('code', ''))
+                            if page_code_normalized == normalized_code or page_code.get('code') == code:
+                                # Get anchor from code object directly (anchor_start/anchor_end format)
+                                if page_code.get('anchor_start'):
+                                    code_anchors_map[page_num] = {
+                                        'start': page_code.get('anchor_start'),
+                                        'end': page_code.get('anchor_end'),
+                                        'page': page_num
+                                    }
+                                elif page_code.get('anchor'):
+                                    code_anchors_map[page_num] = {
+                                        'text': page_code.get('anchor'),
+                                        'page': page_num
+                                    }
+                                break
+
                 for page_num in page_nums:
                     page_data = page_content_map.get(page_num, {})
                     pages_info.append({
                         'page': page_num,
                         'context': desc,
+                        'anchor': code_anchors_map.get(page_num),  # Include anchor
                         'topics': page_data.get('topics', []),
                         'content_preview': page_data.get('content')
                     })
@@ -1144,7 +1259,7 @@ async def get_code_details(code: str):
         if not pages_info:
             doc_json = load_document_json(doc_id)
             seen_pages = set()
-            
+
             if doc_json:
                 for page in doc_json.get('pages', []):
                     page_num = page.get('page')
@@ -1155,9 +1270,20 @@ async def get_code_details(code: str):
                         page_code_normalized = normalize_code_pattern(page_code.get('code', ''))
                         if page_code_normalized == normalized_code or page_code.get('code') == code:
                             seen_pages.add(page_num)
+                            # Get anchor from code object directly (anchor_start/anchor_end format)
+                            anchor = None
+                            if page_code.get('anchor_start'):
+                                anchor = {
+                                    'start': page_code.get('anchor_start'),
+                                    'end': page_code.get('anchor_end'),
+                                    'page': page_num
+                                }
+                            elif page_code.get('anchor'):
+                                anchor = {'text': page_code.get('anchor'), 'page': page_num}
                             pages_info.append({
                                 'page': page_num,
                                 'context': page_code.get('context'),
+                                'anchor': anchor,  # Include anchor (start/end or text)
                                 'topics': page.get('topics', []),
                                 'content_preview': page.get('content', '')[:200] if page.get('content') else None
                             })
@@ -1373,14 +1499,17 @@ async def rebuild_codes_from_json():
             # Insert codes
             for code, data in code_pages.items():
                 pages_json = json.dumps(sorted(data['pages']))
-                description = ', '.join(data['contexts'])[:200]
-                
+                # Get description from meta_categories, fallback to contexts
+                description = get_category_description(code, data['type'])
+                if not description and data['contexts']:
+                    description = ', '.join(data['contexts'])[:200]
+
                 cursor.execute("""
-                    INSERT OR IGNORE INTO document_codes 
+                    INSERT OR IGNORE INTO document_codes
                     (document_id, code_pattern, code_type, description, page_numbers)
                     VALUES (?, ?, ?, ?, ?)
                 """, (doc_id, code, data['type'], description, pages_json))
-                
+
                 results['codes_inserted'] += 1
                 
         except Exception as e:
@@ -1621,3 +1750,235 @@ async def scan_existing_files():
         'updated': updated,
         'files': found_files
     }
+
+
+# ============================================================
+# V2 MULTI-MODEL PARSING ENDPOINTS
+# ============================================================
+
+@router.post("/documents/{doc_id}/parse-v2")
+async def parse_document_v2(doc_id: str, force: bool = False):
+    """
+    Parse document using V2 multi-model pipeline (Gemini → GPT-5.1 → GPT-4.1).
+
+    This uses:
+    - Gemini for fast draft extraction with CODE_CATEGORIES (not specific codes)
+    - GPT-5.1 with high reasoning to review and critique
+    - GPT-4.1 to apply fixes
+
+    Args:
+        doc_id: Document file hash
+        force: Force re-parse even if already parsed
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT file_hash, filename, source_path FROM documents WHERE file_hash = ?", (doc_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_hash, filename, source_path = row[0], row[1], row[2]
+
+    # Check if already parsed (skip if force=True)
+    if not force:
+        existing = load_document_json(file_hash)
+        if existing:
+            return {
+                "status": "already_parsed",
+                "file_hash": file_hash,
+                "content_pages": existing.get('summary', {}).get('content_page_count', 0)
+            }
+
+    # Find PDF file
+    pdf_path = source_path
+    if not os.path.exists(pdf_path):
+        pdf_path = os.path.join(UPLOAD_DIR, source_path)
+    if not os.path.exists(pdf_path):
+        raise HTTPException(status_code=404, detail=f"PDF file not found: {source_path}")
+
+    # Extract text from PDF
+    with open(pdf_path, 'rb') as f:
+        reader = PdfReader(f)
+        pdf_text_chunks = []
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            pdf_text_chunks.append(text)
+
+    # Load topics and meta-categories
+    topics = load_topics_from_db()
+    meta_categories = load_meta_categories_from_json()
+
+    # Run multi-model pipeline
+    result = await run_extraction_pipeline(
+        pdf_text_chunks=pdf_text_chunks,
+        topics=topics,
+        meta_categories=meta_categories,
+        skip_critic=True,
+        skip_fix=True
+    )
+
+    # Parse the final extraction into PageData
+    pages = parse_pipeline_result(result, start_page=1)
+
+    # Build document
+    doc = build_document_data(
+        file_hash=file_hash,
+        filename=filename,
+        total_pages=len(pdf_text_chunks),
+        pages=pages
+    )
+
+    # Save files
+    save_document_files(doc, DOCUMENTS_DIR)
+
+    # Update DB
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE documents
+        SET parsed_at = ?, content_path = ?, total_pages = ?
+        WHERE file_hash = ?
+    """, (
+        doc.parsed_at,
+        os.path.join(DOCUMENTS_DIR, file_hash, 'content.json'),
+        doc.total_pages,
+        file_hash
+    ))
+    conn.commit()
+    conn.close()
+
+    # Save codes to DB
+    save_document_to_db(doc, source_path)
+
+    return {
+        "status": "success",
+        "file_hash": file_hash,
+        "filename": filename,
+        "total_pages": doc.total_pages,
+        "content_pages": doc.summary['content_page_count'],
+        "codes_found": len(doc.summary['all_codes']),
+        "pipeline": {
+            "stages_completed": result.stages_completed,
+            "issues_found": result.total_issues_found,
+            "issues_fixed": result.total_issues_fixed,
+            "processing_time_ms": result.processing_time_ms
+        }
+    }
+
+
+@router.get("/documents/{doc_id}/parse-v2-stream")
+async def parse_document_v2_stream(doc_id: str, force: bool = False):
+    """
+    Parse document using V2 pipeline with SSE streaming for real-time progress.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT file_hash, filename, source_path FROM documents WHERE file_hash = ?", (doc_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_hash, filename, source_path = row[0], row[1], row[2]
+
+    # Check if already parsed
+    if not force:
+        existing = load_document_json(file_hash)
+        if existing:
+            async def already_parsed():
+                yield f"data: {json.dumps({'status': 'already_parsed', 'file_hash': file_hash})}\n\n"
+            return StreamingResponse(already_parsed(), media_type="text/event-stream")
+
+    # Find PDF file
+    pdf_path = source_path
+    if not os.path.exists(pdf_path):
+        pdf_path = os.path.join(UPLOAD_DIR, source_path)
+    if not os.path.exists(pdf_path):
+        raise HTTPException(status_code=404, detail=f"PDF file not found")
+
+    async def stream_pipeline():
+        # Extract text from PDF
+        with open(pdf_path, 'rb') as f:
+            reader = PdfReader(f)
+            pdf_text_chunks = []
+            for page in reader.pages:
+                text = page.extract_text() or ""
+                pdf_text_chunks.append(text)
+
+        yield f"data: {json.dumps({'type': 'info', 'message': f'Extracted {len(pdf_text_chunks)} pages from PDF'})}\n\n"
+
+        # Load topics and meta-categories
+        topics = load_topics_from_db()
+        meta_categories = load_meta_categories_from_json()
+        yield f"data: {json.dumps({'type': 'info', 'message': f'Loaded {len(topics)} topics from dictionary'})}\n\n"
+
+        # Stream pipeline
+        final_extraction = None
+        issues_found = 0
+
+        async for event in run_extraction_pipeline_streaming(
+            pdf_text_chunks=pdf_text_chunks,
+            topics=topics,
+            meta_categories=meta_categories,
+            skip_critic=True,
+            skip_fix=True
+        ):
+            # Forward event
+            yield f"data: {event}"
+
+            # Capture final result
+            try:
+                data = json.loads(event.strip())
+                if data.get("type") == "done":
+                    final_extraction = data.get("final_extraction")
+                    issues_found = data.get("issues_found", 0)
+            except:
+                pass
+
+        # Build and save document
+        if final_extraction:
+            from src.parsers.multi_model_pipeline import PipelineResult
+            result = PipelineResult(
+                draft_extraction={},
+                critique=[],
+                final_extraction={"raw": final_extraction},
+                stages_completed=["all"],
+                total_issues_found=issues_found,
+                total_issues_fixed=issues_found,
+                processing_time_ms=0
+            )
+
+            pages = parse_pipeline_result(result, start_page=1)
+            doc = build_document_data(
+                file_hash=file_hash,
+                filename=filename,
+                total_pages=len(pdf_text_chunks),
+                pages=pages
+            )
+
+            save_document_files(doc, DOCUMENTS_DIR)
+
+            # Update DB
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE documents
+                SET parsed_at = ?, content_path = ?, total_pages = ?
+                WHERE file_hash = ?
+            """, (
+                doc.parsed_at,
+                os.path.join(DOCUMENTS_DIR, file_hash, 'content.json'),
+                doc.total_pages,
+                file_hash
+            ))
+            conn.commit()
+            conn.close()
+
+            save_document_to_db(doc, source_path)
+
+            yield f"data: {json.dumps({'type': 'complete', 'file_hash': file_hash, 'content_pages': doc.summary['content_page_count'], 'codes_found': len(doc.summary['all_codes'])})}\n\n"
+
+    return StreamingResponse(stream_pipeline(), media_type="text/event-stream")

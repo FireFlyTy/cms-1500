@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   ChevronDown, ChevronRight, CheckCircle, Clock, AlertCircle,
   Loader2, X, FileText, ShieldCheck, Gavel, BookOpen, BrainCircuit,
-  Users, Target, Swords
+  Users, Target, Swords, GitBranch, ArrowRight
 } from 'lucide-react';
 import StreamBlock from './StreamBlock';
 
@@ -54,6 +54,7 @@ const CodeProgress = ({ code, codeProgress, isExpanded, onToggle }) => {
 
   const status = codeProgress?.status || 'pending';
   const steps = codeProgress?.steps || {};
+  const cascade = codeProgress?.cascade || null;
 
   // Determine current step
   const currentStep = useMemo(() => {
@@ -183,6 +184,52 @@ const CodeProgress = ({ code, codeProgress, isExpanded, onToggle }) => {
       {/* Expanded content */}
       {isExpanded && (
         <div className="p-4 space-y-3 bg-gray-50/50">
+          {/* Cascade indicator */}
+          {cascade && cascade.patterns_to_generate && cascade.patterns_to_generate.length > 1 && (
+            <div className="border rounded-lg overflow-hidden bg-white">
+              <div className="px-4 py-2 bg-purple-50 border-b flex items-center gap-2">
+                <GitBranch className="w-4 h-4 text-purple-600" />
+                <span className="text-sm font-semibold text-purple-800">Cascade Generation</span>
+                <span className="text-xs text-purple-600">
+                  ({cascade.current_index + 1}/{cascade.patterns_to_generate.length} levels)
+                </span>
+              </div>
+              <div className="p-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {cascade.patterns_to_generate.map((pattern, idx) => {
+                    const isComplete = idx < cascade.current_index;
+                    const isCurrent = idx === cascade.current_index && cascade.current_pattern === pattern;
+                    return (
+                      <React.Fragment key={pattern}>
+                        <div className={`px-3 py-1.5 rounded-lg text-sm font-mono flex items-center gap-1.5 ${
+                          isComplete
+                            ? 'bg-green-100 text-green-700 border border-green-200'
+                            : isCurrent
+                              ? 'bg-blue-100 text-blue-700 border border-blue-300 ring-2 ring-blue-200'
+                              : 'bg-gray-100 text-gray-500 border border-gray-200'
+                        }`}>
+                          {isComplete && <CheckCircle className="w-3.5 h-3.5" />}
+                          {isCurrent && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                          {pattern}
+                        </div>
+                        {idx < cascade.patterns_to_generate.length - 1 && (
+                          <ArrowRight className={`w-4 h-4 ${
+                            isComplete ? 'text-green-400' : 'text-gray-300'
+                          }`} />
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+                {cascade.parent_rule && (
+                  <div className="mt-2 text-xs text-gray-500">
+                    Inheriting from: <span className="font-mono font-medium">{cascade.parent_rule}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Draft */}
           <StepBlock
             stepName="draft"

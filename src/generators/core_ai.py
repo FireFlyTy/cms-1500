@@ -20,7 +20,7 @@ AI_PROVIDER = os.getenv("AI_PROVIDER", "google").lower()
 
 # Google Config
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
-GOOGLE_MODEL_NAME = os.getenv("GOOGLE_MODEL", "gemini-2.5-pro")
+GOOGLE_MODEL_NAME = os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
 
 # OpenAI Config
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -118,12 +118,18 @@ async def _stream_openai(prompt: str) -> AsyncGenerator[str, None]:
     yield json.dumps({"type": "status", "content": f"Initializing {OPENAI_MODEL_NAME}..."}) + "\n\n"
 
     try:
-        stream = await openai_client.chat.completions.create(
-            model=OPENAI_MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            reasoning_effort=REASONING_EFFORT,
-            stream=True
-        )
+        # Build request params
+        params = {
+            "model": OPENAI_MODEL_NAME,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True
+        }
+
+        # Add reasoning_effort only for models that support it
+        if OPENAI_MODEL_NAME in ["gpt-5.1", "o1", "o1-mini", "o3", "o3-mini"]:
+            params["reasoning_effort"] = REASONING_EFFORT
+
+        stream = await openai_client.chat.completions.create(**params)
 
         full_response_text = ''
 
@@ -138,6 +144,155 @@ async def _stream_openai(prompt: str) -> AsyncGenerator[str, None]:
     except Exception as e:
         print(f"!!! OPENAI API ERROR: {str(e)}")
         yield json.dumps({"type": "error", "content": f"OpenAI Error: {str(e)}"}) + "\n\n"
+
+
+async def call_openai_model(
+    prompt: str,
+    model: str = "gpt-4.1",
+    reasoning_effort: str = None,
+    stream: bool = False
+) -> str:
+    """
+    Call a specific OpenAI model with optional reasoning.
+
+    Args:
+        prompt: The prompt to send
+        model: Model name (gpt-5.1, gpt-4.1, etc.)
+        reasoning_effort: For reasoning models - "low", "medium", "high"
+        stream: Whether to stream (not implemented yet, returns full response)
+
+    Returns:
+        The model's response text
+    """
+    if not openai_client:
+        raise ValueError("OPENAI_API_KEY is missing")
+
+    print(f"--- [DEBUG] OpenAI call: {model}, reasoning: {reasoning_effort} ---")
+
+    try:
+        # Build request params
+        params = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+
+        # Add reasoning_effort only for models that support it (gpt-5.1, o1, o3, etc.)
+        if reasoning_effort and model in ["gpt-5.1", "o1", "o1-mini", "o3", "o3-mini"]:
+            params["reasoning_effort"] = reasoning_effort
+
+        response = await openai_client.chat.completions.create(**params)
+
+        return response.choices[0].message.content
+
+    except Exception as e:
+        print(f"!!! OPENAI API ERROR ({model}): {str(e)}")
+        raise
+
+
+async def stream_openai_model(
+    prompt: str,
+    model: str = "gpt-4.1",
+    reasoning_effort: str = None
+) -> AsyncGenerator[str, None]:
+    """
+    Stream response from a specific OpenAI model.
+
+    Args:
+        prompt: The prompt to send
+        model: Model name (gpt-5.1, gpt-4.1, etc.)
+        reasoning_effort: For reasoning models - "low", "medium", "high"
+
+    Yields:
+        JSON chunks with type and content
+    """
+    if not openai_client:
+        yield json.dumps({"type": "error", "content": "OPENAI_API_KEY is missing"}) + "\n\n"
+        return
+
+    yield json.dumps({"type": "status", "content": f"Calling {model}..."}) + "\n\n"
+
+    try:
+        # Build request params
+        params = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True
+        }
+
+        # Add reasoning_effort only for models that support it
+        if reasoning_effort and model in ["gpt-5.1", "o1", "o1-mini", "o3", "o3-mini"]:
+            params["reasoning_effort"] = reasoning_effort
+
+        stream = await openai_client.chat.completions.create(**params)
+
+        full_response_text = ''
+
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                content = chunk.choices[0].delta.content
+                full_response_text += content
+                yield json.dumps({"type": "content", "content": content}) + "\n\n"
+
+        yield json.dumps({"type": "done", "full_text": full_response_text}) + "\n\n"
+
+    except Exception as e:
+        print(f"!!! OPENAI API ERROR ({model}): {str(e)}")
+        yield json.dumps({"type": "error", "content": f"OpenAI Error: {str(e)}"}) + "\n\n"
+
+
+async def call_gemini_model(
+    prompt: str,
+    model: str = None,
+    thinking_budget: int = None
+) -> str:
+    """
+    Call Gemini model and return full response (non-streaming).
+
+    Args:
+        prompt: The prompt to send
+        model: Model name (defaults to GOOGLE_MODEL_NAME)
+        thinking_budget: Optional thinking budget
+
+    Returns:
+        The model's response text
+    """
+    if not google_client:
+        raise ValueError("GOOGLE_API_KEY is missing")
+
+    model = model or GOOGLE_MODEL_NAME
+    print(f"--- [DEBUG] Gemini call: {model}, thinking: {thinking_budget} ---")
+
+    try:
+        contents = [types.Content(role='user', parts=[types.Part.from_text(text=prompt)])]
+
+        # Build config
+        if thinking_budget is not None:
+            config = types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(
+                    include_thoughts=False,
+                    thinking_budget=thinking_budget
+                ),
+                temperature=0.7
+            )
+        else:
+            config = types.GenerateContentConfig(temperature=0.7)
+
+        response = await google_client.aio.models.generate_content(
+            model=model,
+            contents=contents,
+            config=config
+        )
+
+        # Extract text from response
+        if response.candidates and response.candidates[0].content:
+            parts = response.candidates[0].content.parts
+            return ''.join(p.text for p in parts if p.text and not getattr(p, 'thought', False))
+
+        return ""
+
+    except Exception as e:
+        print(f"!!! GEMINI API ERROR ({model}): {str(e)}")
+        raise
 
 
 # ==========================================

@@ -359,6 +359,13 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
       .catch(() => setLoading(false));
   }, [docId, initialPage]);
 
+  // Set searchText from highlightCode when document is opened
+  useEffect(() => {
+    if (highlightCode) {
+      setSearchText(highlightCode);
+    }
+  }, [highlightCode]);
+
   if (loading) {
     return (
       <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
@@ -394,8 +401,12 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
         if (c.code.toLowerCase().includes(search)) return true;
         // Search in contexts
         if (c.contexts?.some(ctx => ctx.toLowerCase().includes(search))) return true;
-        // Search in anchors
-        if (c.anchors?.some(a => a.text.toLowerCase().includes(search))) return true;
+        // Search in anchors (support both old text and new start/end formats)
+        if (c.anchors?.some(a => {
+          const text = a.text || a.start || '';
+          const end = a.end || '';
+          return text.toLowerCase().includes(search) || end.toLowerCase().includes(search);
+        })) return true;
         return false;
       })
     : allCodes;
@@ -445,10 +456,13 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
 
             {/* Highlight code indicator */}
             {highlightCode && (
-              <div className="flex items-center gap-2 px-2 py-1 bg-yellow-100 rounded-lg">
-                <Search className="w-3 h-3 text-yellow-600" />
-                <span className="text-xs font-medium text-yellow-700">
-                  Highlighting: <code className="font-mono">{highlightCode}</code>
+              <div className="flex items-center gap-2 px-2 py-1 bg-yellow-100 rounded-lg max-w-md">
+                <Search className="w-3 h-3 text-yellow-600 flex-shrink-0" />
+                <span className="text-xs font-medium text-yellow-700 truncate">
+                  Citation: {highlightCode.startsWith('[RANGE]')
+                    ? `"${highlightCode.replace('[RANGE]', '').split('|||')[0].substring(0, 30)}..."`
+                    : `"${highlightCode.substring(0, 40)}..."`
+                  }
                 </span>
               </div>
             )}
@@ -790,6 +804,13 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                                 {codeInfo.pages?.slice(0, expandedCode === codeInfo.code ? undefined : 10).map(pageNum => {
                                   // Find anchor for this page
                                   const anchor = codeInfo.anchors?.find(a => a.page === pageNum);
+                                  // Support both old format (text) and new format (start/end)
+                                  const anchorText = anchor?.text || anchor?.start;
+                                  const hasAnchor = !!anchorText;
+                                  // Build search text: use range format if we have start+end
+                                  const searchValue = anchor?.start && anchor?.end
+                                    ? `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`
+                                    : anchorText;
                                   return (
                                     <button
                                       key={pageNum}
@@ -797,24 +818,24 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                                         e.stopPropagation();
                                         setSelectedPage(pageNum);
                                         // Set anchor text for highlighting in PDF
-                                        if (anchor?.text) {
-                                          setSearchText(anchor.text);
+                                        if (searchValue) {
+                                          setSearchText(searchValue);
                                         } else {
                                           // Fallback: use context or code itself
                                           setSearchText(codeInfo.contexts?.[0] || codeInfo.code);
                                         }
                                       }}
-                                      title={anchor?.text ? `📍 "${anchor.text}"` : 'Click to view page (no citation anchor)'}
+                                      title={hasAnchor ? `📍 "${anchorText}"` : 'Click to view page (no citation anchor)'}
                                       className={`px-2 py-0.5 text-xs rounded transition-colors ${
                                         selectedPage === pageNum
                                           ? 'bg-blue-600 text-white'
-                                          : anchor?.text
+                                          : hasAnchor
                                             ? 'bg-yellow-50 border border-yellow-300 hover:bg-yellow-100'
                                             : 'bg-white border hover:bg-blue-50 hover:border-blue-300'
                                       }`}
                                     >
                                       p.{pageNum}
-                                      {anchor?.text && <span className="ml-1 text-yellow-600">•</span>}
+                                      {hasAnchor && <span className="ml-1 text-yellow-600">•</span>}
                                     </button>
                                   );
                                 })}
@@ -834,19 +855,34 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                                 {codeInfo.anchors?.length > 0 && (
                                   <div className="space-y-1">
                                     <p className="text-xs font-medium text-gray-600">Citations:</p>
-                                    {codeInfo.anchors.map((anchor, idx) => (
-                                      <button
-                                        key={idx}
-                                        onClick={() => {
-                                          setSelectedPage(anchor.page);
-                                          setSearchText(anchor.text);
-                                        }}
-                                        className="block w-full text-left text-xs px-2 py-1 rounded bg-yellow-50 border border-yellow-200 hover:bg-yellow-100 transition-colors"
-                                      >
-                                        <span className="text-gray-400">p.{anchor.page}:</span>{' '}
-                                        <span className="text-gray-700">"{anchor.text}"</span>
-                                      </button>
-                                    ))}
+                                    {codeInfo.anchors.map((anchor, idx) => {
+                                      // Support both old format (text) and new format (start/end)
+                                      const anchorText = anchor.text || anchor.start;
+                                      const displayText = anchor.text
+                                        ? `"${anchor.text}"`
+                                        : anchor.start && anchor.end
+                                          ? `"${anchor.start}" ... "${anchor.end}"`
+                                          : anchor.start
+                                            ? `"${anchor.start}"`
+                                            : '';
+                                      // Build search text: use range format if we have start+end
+                                      const searchValue = anchor.start && anchor.end
+                                        ? `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`
+                                        : anchorText;
+                                      return (
+                                        <button
+                                          key={idx}
+                                          onClick={() => {
+                                            setSelectedPage(anchor.page);
+                                            setSearchText(searchValue);
+                                          }}
+                                          className="block w-full text-left text-xs px-2 py-1 rounded bg-yellow-50 border border-yellow-200 hover:bg-yellow-100 transition-colors"
+                                        >
+                                          <span className="text-gray-400">p.{anchor.page}:</span>{' '}
+                                          <span className="text-gray-700">{displayText}</span>
+                                        </button>
+                                      );
+                                    })}
                                   </div>
                                 )}
                               </div>
@@ -892,28 +928,34 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                               <div className="px-3 py-1.5 border-t bg-gray-50/50 flex flex-wrap gap-1">
                                 {topicPages.map(pageNum => {
                                   const anchor = topicAnchors.find(a => a.page === pageNum);
+                                  const anchorText = anchor?.text || anchor?.start;
+                                  const hasAnchor = !!anchorText;
+                                  // Build search text: use range format if we have start+end
+                                  const searchValue = anchor?.start && anchor?.end
+                                    ? `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`
+                                    : anchorText;
                                   return (
                                     <button
                                       key={pageNum}
                                       onClick={() => {
                                         setSelectedPage(pageNum);
-                                        if (anchor?.text) {
-                                          setSearchText(anchor.text);
+                                        if (searchValue) {
+                                          setSearchText(searchValue);
                                         } else {
                                           setSearchText(topicName);
                                         }
                                       }}
-                                      title={anchor?.text ? `📍 "${anchor.text}"` : `Search for "${topicName}"`}
+                                      title={hasAnchor ? `📍 "${anchorText}"` : `Search for "${topicName}"`}
                                       className={`px-2 py-0.5 text-xs rounded transition-colors ${
                                         selectedPage === pageNum
                                           ? 'bg-blue-600 text-white'
-                                          : anchor?.text
+                                          : hasAnchor
                                             ? 'bg-yellow-50 border border-yellow-300 hover:bg-yellow-100'
                                             : 'bg-white border hover:bg-blue-50'
                                       }`}
                                     >
                                       p.{pageNum}
-                                      {anchor?.text && <span className="ml-1 text-yellow-600">•</span>}
+                                      {hasAnchor && <span className="ml-1 text-yellow-600">•</span>}
                                     </button>
                                   );
                                 })}
@@ -923,19 +965,33 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                             {expandedTopic === topicName && topicAnchors.length > 0 && (
                               <div className="px-3 py-2 bg-blue-50 border-t space-y-1">
                                 <p className="text-xs font-medium text-blue-600">Citations:</p>
-                                {topicAnchors.map((anchor, idx) => (
-                                  <button
-                                    key={idx}
-                                    onClick={() => {
-                                      setSelectedPage(anchor.page);
-                                      setSearchText(anchor.text);
-                                    }}
-                                    className="block w-full text-left text-xs px-2 py-1 rounded bg-white border border-blue-200 hover:bg-blue-100 transition-colors"
-                                  >
-                                    <span className="text-gray-400">p.{anchor.page}:</span>{' '}
-                                    <span className="text-gray-700">"{anchor.text}"</span>
-                                  </button>
-                                ))}
+                                {topicAnchors.map((anchor, idx) => {
+                                  const anchorText = anchor.text || anchor.start;
+                                  const displayText = anchor.start && anchor.end
+                                    ? `"${anchor.start}" ... "${anchor.end}"`
+                                    : anchor.start
+                                      ? `"${anchor.start}"`
+                                      : anchor.text
+                                        ? `"${anchor.text}"`
+                                        : '';
+                                  // Build search text: use range format if we have start+end
+                                  const searchValue = anchor.start && anchor.end
+                                    ? `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`
+                                    : anchorText;
+                                  return (
+                                    <button
+                                      key={idx}
+                                      onClick={() => {
+                                        setSelectedPage(anchor.page);
+                                        setSearchText(searchValue);
+                                      }}
+                                      className="block w-full text-left text-xs px-2 py-1 rounded bg-white border border-blue-200 hover:bg-blue-100 transition-colors"
+                                    >
+                                      <span className="text-gray-400">p.{anchor.page}:</span>{' '}
+                                      <span className="text-gray-700">{displayText}</span>
+                                    </button>
+                                  );
+                                })}
                               </div>
                             )}
                           </div>
@@ -979,28 +1035,34 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                               <div className="px-3 py-1.5 border-t bg-gray-50/50 flex flex-wrap gap-1">
                                 {medPages.map(pageNum => {
                                   const anchor = medAnchors.find(a => a.page === pageNum);
+                                  const anchorText = anchor?.text || anchor?.start;
+                                  const hasAnchor = !!anchorText;
+                                  // Build search text: use range format if we have start+end
+                                  const searchValue = anchor?.start && anchor?.end
+                                    ? `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`
+                                    : anchorText;
                                   return (
                                     <button
                                       key={pageNum}
                                       onClick={() => {
                                         setSelectedPage(pageNum);
-                                        if (anchor?.text) {
-                                          setSearchText(anchor.text);
+                                        if (searchValue) {
+                                          setSearchText(searchValue);
                                         } else {
                                           setSearchText(medName);
                                         }
                                       }}
-                                      title={anchor?.text ? `📍 "${anchor.text}"` : `Search for "${medName}"`}
+                                      title={hasAnchor ? `📍 "${anchorText}"` : `Search for "${medName}"`}
                                       className={`px-2 py-0.5 text-xs rounded transition-colors ${
                                         selectedPage === pageNum
                                           ? 'bg-blue-600 text-white'
-                                          : anchor?.text
+                                          : hasAnchor
                                             ? 'bg-yellow-50 border border-yellow-300 hover:bg-yellow-100'
                                             : 'bg-white border hover:bg-blue-50'
                                       }`}
                                     >
                                       p.{pageNum}
-                                      {anchor?.text && <span className="ml-1 text-yellow-600">•</span>}
+                                      {hasAnchor && <span className="ml-1 text-yellow-600">•</span>}
                                     </button>
                                   );
                                 })}
@@ -1010,19 +1072,33 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                             {expandedMed === medName && medAnchors.length > 0 && (
                               <div className="px-3 py-2 bg-emerald-50 border-t space-y-1">
                                 <p className="text-xs font-medium text-emerald-600">Citations:</p>
-                                {medAnchors.map((anchor, idx) => (
-                                  <button
-                                    key={idx}
-                                    onClick={() => {
-                                      setSelectedPage(anchor.page);
-                                      setSearchText(anchor.text);
-                                    }}
-                                    className="block w-full text-left text-xs px-2 py-1 rounded bg-white border border-emerald-200 hover:bg-emerald-100 transition-colors"
-                                  >
-                                    <span className="text-gray-400">p.{anchor.page}:</span>{' '}
-                                    <span className="text-gray-700">"{anchor.text}"</span>
-                                  </button>
-                                ))}
+                                {medAnchors.map((anchor, idx) => {
+                                  const anchorText = anchor.text || anchor.start;
+                                  const displayText = anchor.start && anchor.end
+                                    ? `"${anchor.start}" ... "${anchor.end}"`
+                                    : anchor.start
+                                      ? `"${anchor.start}"`
+                                      : anchor.text
+                                        ? `"${anchor.text}"`
+                                        : '';
+                                  // Build search text: use range format if we have start+end
+                                  const searchValue = anchor.start && anchor.end
+                                    ? `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`
+                                    : anchorText;
+                                  return (
+                                    <button
+                                      key={idx}
+                                      onClick={() => {
+                                        setSelectedPage(anchor.page);
+                                        setSearchText(searchValue);
+                                      }}
+                                      className="block w-full text-left text-xs px-2 py-1 rounded bg-white border border-emerald-200 hover:bg-emerald-100 transition-colors"
+                                    >
+                                      <span className="text-gray-400">p.{anchor.page}:</span>{' '}
+                                      <span className="text-gray-700">{displayText}</span>
+                                    </button>
+                                  );
+                                })}
                               </div>
                             )}
                           </div>
@@ -1186,28 +1262,52 @@ const CodeIndexView = ({ onDocumentClick, onClose }) => {
                         </button>
                       </div>
                       <div className="p-3 space-y-2">
-                        {doc.pages?.map((pageInfo, i) => (
-                          <button
-                            key={i}
-                            onClick={() => onDocumentClick(doc.id, pageInfo.page, codeDetails.code)}
-                            className="w-full text-left hover:bg-blue-50 p-2 rounded-lg transition-colors group"
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-medium text-blue-600 group-hover:underline">
-                                Page {pageInfo.page}
-                              </span>
-                              <ChevronRight className="w-3 h-3 text-gray-300 group-hover:text-blue-400" />
-                            </div>
-                            {pageInfo.context && (
-                              <p className="text-xs italic text-gray-500 mt-1 truncate">
-                                "{pageInfo.context}"
-                              </p>
-                            )}
-                            {pageInfo.content_preview && (
-                              <p className="text-xs text-gray-400 mt-1 truncate">{pageInfo.content_preview}</p>
-                            )}
-                          </button>
-                        ))}
+                        {doc.pages?.map((pageInfo, i) => {
+                          // Build highlight text from anchor (prefer start/end format, fallback to text or context)
+                          const anchor = pageInfo.anchor;
+                          let highlightText = null;
+                          if (anchor?.start && anchor?.end) {
+                            highlightText = `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`;
+                          } else if (anchor?.text) {
+                            highlightText = anchor.text;
+                          } else if (anchor?.start) {
+                            highlightText = anchor.start;
+                          } else if (pageInfo.context) {
+                            highlightText = pageInfo.context;
+                          }
+
+                          return (
+                            <button
+                              key={i}
+                              onClick={() => onDocumentClick(doc.id, pageInfo.page, highlightText)}
+                              className="w-full text-left hover:bg-blue-50 p-2 rounded-lg transition-colors group"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-medium text-blue-600 group-hover:underline">
+                                  Page {pageInfo.page}
+                                </span>
+                                {anchor && <span className="text-yellow-500 text-xs">•</span>}
+                                <ChevronRight className="w-3 h-3 text-gray-300 group-hover:text-blue-400" />
+                              </div>
+                              {anchor?.start && anchor?.end ? (
+                                <p className="text-xs italic text-gray-500 mt-1 truncate">
+                                  "{anchor.start}" ... "{anchor.end}"
+                                </p>
+                              ) : anchor?.text ? (
+                                <p className="text-xs italic text-gray-500 mt-1 truncate">
+                                  "{anchor.text}"
+                                </p>
+                              ) : pageInfo.context ? (
+                                <p className="text-xs italic text-gray-500 mt-1 truncate">
+                                  "{pageInfo.context}"
+                                </p>
+                              ) : null}
+                              {pageInfo.content_preview && (
+                                <p className="text-xs text-gray-400 mt-1 truncate">{pageInfo.content_preview}</p>
+                              )}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   ))}

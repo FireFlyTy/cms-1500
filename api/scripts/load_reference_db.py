@@ -295,6 +295,265 @@ def load_cpt_dhs_addendum(conn, filepath: Path):
     return count
 
 
+def build_code_hierarchy(conn):
+    """
+    Build code_hierarchy table from existing ICD-10, CPT, HCPCS codes.
+
+    Hierarchy levels:
+    - Level 0 (Meta-category): E, F, 9, J (first letter/digit)
+    - Level 1 (Category): E11, F32, 992 (3-char ICD-10, 3-digit CPT prefix)
+    - Level 2 (Subcategory): E11.6, 9921 (intermediate grouping)
+    - Level 3 (Code): E11.65, 99213 (full specific codes)
+
+    Meta-categories:
+    - ICD-10: First letter (A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, V, W, X, Y, Z)
+    - HCPCS: First letter (A, B, C, E, G, J, K, L, M, P, Q, R, S, T, V)
+    - CPT: First digit (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+    """
+    print("\nBuilding code hierarchy...")
+
+    cursor = conn.cursor()
+
+    # Clear existing hierarchy
+    cursor.execute("DELETE FROM code_hierarchy")
+
+    meta_categories_added = set()
+    categories_added = set()
+    subcategories_added = set()
+    codes_added = 0
+
+    # ============================================================
+    # ICD-10 Hierarchy
+    # ============================================================
+    print("  Processing ICD-10 codes...")
+
+    cursor.execute("SELECT code, description FROM icd10")
+    icd10_rows = cursor.fetchall()
+
+    for row in icd10_rows:
+        code_raw = row[0]  # Stored without dots (E119, F321)
+        description = row[1]
+
+        # Skip if too short
+        if len(code_raw) < 3:
+            continue
+
+        # Format code with dot for ICD-10 (E119 -> E11.9)
+        if len(code_raw) > 3:
+            code = code_raw[:3] + '.' + code_raw[3:]
+        else:
+            code = code_raw
+
+        # Meta-category: first letter (E, F, G, etc.)
+        meta_cat = code_raw[0].upper()
+        meta_key = ('ICD-10', meta_cat)
+
+        # Level 0: Meta-category (single letter, e.g., E)
+        if meta_key not in meta_categories_added:
+            cursor.execute("""
+                INSERT OR IGNORE INTO code_hierarchy
+                (code_type, level, pattern, parent_pattern, description, meta_category)
+                VALUES ('ICD-10', 0, ?, NULL, ?, ?)
+            """, (meta_cat, f"ICD-10 Chapter {meta_cat}", meta_cat))
+            meta_categories_added.add(meta_key)
+
+        # Level 1: Category (first 3 chars, e.g., E11)
+        category = code_raw[:3]
+        category_key = ('ICD-10', category)
+
+        if category_key not in categories_added:
+            cursor.execute("""
+                INSERT OR IGNORE INTO code_hierarchy
+                (code_type, level, pattern, parent_pattern, description, meta_category)
+                VALUES ('ICD-10', 1, ?, ?, ?, ?)
+            """, (category, meta_cat, f"ICD-10 Category {category}", meta_cat))
+            categories_added.add(category_key)
+
+        # Level 2: Subcategory (e.g., E11.6 from E11.65)
+        if '.' in code and len(code.split('.')[1]) > 1:
+            parts = code.split('.')
+            subcategory = parts[0] + '.' + parts[1][0]
+            subcat_key = ('ICD-10', subcategory)
+
+            if subcat_key not in subcategories_added:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO code_hierarchy
+                    (code_type, level, pattern, parent_pattern, description, meta_category)
+                    VALUES ('ICD-10', 2, ?, ?, ?, ?)
+                """, (subcategory, category, f"ICD-10 Subcategory {subcategory}", meta_cat))
+                subcategories_added.add(subcat_key)
+
+            parent = subcategory
+        else:
+            parent = category
+
+        # Level 3: Full code
+        cursor.execute("""
+            INSERT OR IGNORE INTO code_hierarchy
+            (code_type, level, pattern, parent_pattern, description, meta_category)
+            VALUES ('ICD-10', 3, ?, ?, ?, ?)
+        """, (code, parent, description, meta_cat))
+        codes_added += 1
+
+    print(f"    ICD-10: {len([c for c in meta_categories_added if c[0]=='ICD-10'])} meta-categories, "
+          f"{len([c for c in categories_added if c[0]=='ICD-10'])} categories, "
+          f"{len([c for c in subcategories_added if c[0]=='ICD-10'])} subcategories")
+
+    # ============================================================
+    # CPT Hierarchy
+    # ============================================================
+    print("  Processing CPT codes...")
+
+    cursor.execute("SELECT code, description FROM cpt")
+    cpt_rows = cursor.fetchall()
+
+    for row in cpt_rows:
+        code = str(row[0]).strip()
+        description = row[1]
+
+        # CPT codes are typically 5 digits
+        if len(code) < 4:
+            continue
+
+        # Meta-category: first digit (0-9) representing CPT section
+        meta_cat = code[0] if code[0].isdigit() else '9'
+        meta_key = ('CPT', meta_cat)
+
+        # Level 0: Meta-category (single digit, e.g., 9)
+        if meta_key not in meta_categories_added:
+            cursor.execute("""
+                INSERT OR IGNORE INTO code_hierarchy
+                (code_type, level, pattern, parent_pattern, description, meta_category)
+                VALUES ('CPT', 0, ?, NULL, ?, ?)
+            """, (meta_cat, f"CPT Section {meta_cat}xxxx", meta_cat))
+            meta_categories_added.add(meta_key)
+
+        # Level 1: Category (first 3 digits, e.g., 992)
+        category = code[:3]
+        category_key = ('CPT', category)
+
+        if category_key not in categories_added:
+            cursor.execute("""
+                INSERT OR IGNORE INTO code_hierarchy
+                (code_type, level, pattern, parent_pattern, description, meta_category)
+                VALUES ('CPT', 1, ?, ?, ?, ?)
+            """, (category, meta_cat, f"CPT Category {category}xx", meta_cat))
+            categories_added.add(category_key)
+
+        # Level 2: Subcategory (first 4 digits, e.g., 9921)
+        if len(code) >= 5:
+            subcategory = code[:4]
+            subcat_key = ('CPT', subcategory)
+
+            if subcat_key not in subcategories_added:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO code_hierarchy
+                    (code_type, level, pattern, parent_pattern, description, meta_category)
+                    VALUES ('CPT', 2, ?, ?, ?, ?)
+                """, (subcategory, category, f"CPT Subcategory {subcategory}x", meta_cat))
+                subcategories_added.add(subcat_key)
+
+            parent = subcategory
+        else:
+            parent = category
+
+        # Level 3: Full code
+        cursor.execute("""
+            INSERT OR IGNORE INTO code_hierarchy
+            (code_type, level, pattern, parent_pattern, description, meta_category)
+            VALUES ('CPT', 3, ?, ?, ?, ?)
+        """, (code, parent, description, meta_cat))
+        codes_added += 1
+
+    print(f"    CPT: {len([c for c in meta_categories_added if c[0]=='CPT'])} meta-categories, "
+          f"{len([c for c in categories_added if c[0]=='CPT'])} categories, "
+          f"{len([c for c in subcategories_added if c[0]=='CPT'])} subcategories")
+
+    # ============================================================
+    # HCPCS Hierarchy
+    # ============================================================
+    print("  Processing HCPCS codes...")
+
+    cursor.execute("SELECT code, long_description FROM hcpcs")
+    hcpcs_rows = cursor.fetchall()
+
+    for row in hcpcs_rows:
+        code = str(row[0]).strip()
+        description = row[1]
+
+        # HCPCS codes start with letter (A, E, G, J, etc.)
+        if len(code) < 4 or not code[0].isalpha():
+            continue
+
+        # Meta-category: first letter (A, B, C, E, G, J, etc.)
+        meta_cat = code[0].upper()
+        meta_key = ('HCPCS', meta_cat)
+
+        # Level 0: Meta-category (single letter, e.g., J)
+        if meta_key not in meta_categories_added:
+            cursor.execute("""
+                INSERT OR IGNORE INTO code_hierarchy
+                (code_type, level, pattern, parent_pattern, description, meta_category)
+                VALUES ('HCPCS', 0, ?, NULL, ?, ?)
+            """, (meta_cat, f"HCPCS Section {meta_cat}xxxx", meta_cat))
+            meta_categories_added.add(meta_key)
+
+        # Level 1: Category (first 2 chars, e.g., J1, A4, E0)
+        category = code[:2]
+        category_key = ('HCPCS', category)
+
+        if category_key not in categories_added:
+            cursor.execute("""
+                INSERT OR IGNORE INTO code_hierarchy
+                (code_type, level, pattern, parent_pattern, description, meta_category)
+                VALUES ('HCPCS', 1, ?, ?, ?, ?)
+            """, (category, meta_cat, f"HCPCS Category {category}xxx", meta_cat))
+            categories_added.add(category_key)
+
+        # Level 2: Subcategory (first 3 chars, e.g., J19, A42)
+        if len(code) >= 4:
+            subcategory = code[:3]
+            subcat_key = ('HCPCS', subcategory)
+
+            if subcat_key not in subcategories_added:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO code_hierarchy
+                    (code_type, level, pattern, parent_pattern, description, meta_category)
+                    VALUES ('HCPCS', 2, ?, ?, ?, ?)
+                """, (subcategory, category, f"HCPCS Subcategory {subcategory}xx", meta_cat))
+                subcategories_added.add(subcat_key)
+
+            parent = subcategory
+        else:
+            parent = category
+
+        # Level 3: Full code
+        cursor.execute("""
+            INSERT OR IGNORE INTO code_hierarchy
+            (code_type, level, pattern, parent_pattern, description, meta_category)
+            VALUES ('HCPCS', 3, ?, ?, ?, ?)
+        """, (code, parent, description, meta_cat))
+        codes_added += 1
+
+    print(f"    HCPCS: {len([c for c in meta_categories_added if c[0]=='HCPCS'])} meta-categories, "
+          f"{len([c for c in categories_added if c[0]=='HCPCS'])} categories, "
+          f"{len([c for c in subcategories_added if c[0]=='HCPCS'])} subcategories")
+
+    conn.commit()
+
+    # Get final counts
+    cursor.execute("SELECT level, COUNT(*) FROM code_hierarchy GROUP BY level")
+    level_counts = {row[0]: row[1] for row in cursor.fetchall()}
+
+    print(f"\n  ✓ Code hierarchy built:")
+    print(f"    Level 0 (Meta-categories): {level_counts.get(0, 0):,}")
+    print(f"    Level 1 (Categories): {level_counts.get(1, 0):,}")
+    print(f"    Level 2 (Subcategories): {level_counts.get(2, 0):,}")
+    print(f"    Level 3 (Codes): {level_counts.get(3, 0):,}")
+
+    return sum(level_counts.values())
+
+
 def main():
     print("=" * 60)
     print("Loading Reference Data into SQLite")
@@ -360,6 +619,9 @@ def main():
         stats["cpt_dhs"] = load_cpt_dhs_addendum(conn, cpt_dhs_path)
     else:
         print(f"⚠ CPT DHS addendum not found: {cpt_dhs_path}")
+
+    # Build code hierarchy from loaded codes
+    stats["code_hierarchy"] = build_code_hierarchy(conn)
 
     conn.close()
     

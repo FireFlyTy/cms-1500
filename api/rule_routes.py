@@ -34,6 +34,7 @@ from src.generators import (
     build_sources_context,
     RuleGenerator,
     CMSRuleGenerator,
+    HierarchyRuleGenerator,
 )
 
 router = APIRouter(prefix="/api/rules", tags=["rules"])
@@ -47,12 +48,16 @@ os.makedirs(RULES_DIR, exist_ok=True)
 
 
 # ============================================================
-# RULES CACHE (for fast status lookups)
+# CACHES (for fast lookups)
 # ============================================================
 
 _rules_cache = {}
 _rules_cache_time = 0
 _CACHE_TTL = 30  # seconds
+
+# Codes cache
+_codes_cache = []
+_codes_cache_time = 0
 
 
 def _scan_rules_directory() -> dict:
@@ -130,8 +135,9 @@ def _get_rules_cache() -> dict:
 
 def invalidate_rules_cache():
     """Call this after creating/deleting rules."""
-    global _rules_cache_time
+    global _rules_cache_time, _codes_cache_time
     _rules_cache_time = 0
+    _codes_cache_time = 0
 
 
 # ============================================================
@@ -144,17 +150,23 @@ class GenerateRuleRequest(BaseModel):
     document_ids: Optional[List[str]] = None  # If None, use all relevant docs
     parallel_validators: bool = True  # Run Mentor || RedTeam in parallel
     thinking_budget: int = 10000
+    model: Optional[str] = None  # "gemini" or "gpt-4.1" (env var RULE_GENERATOR_MODEL if not set)
+    force_regenerate: bool = False  # Regenerate even if rule exists
 
 
 class BatchGenerateRequest(BaseModel):
     codes: List[str]
     code_type: str = "ICD-10"
+    model: Optional[str] = None  # "gemini" or "gpt-4.1"
+    force_regenerate: bool = False
 
 
 class GenerateCMSRuleRequest(BaseModel):
     code: str = ""
     code_type: Optional[str] = None  # Auto-detect if not provided
     thinking_budget: int = 8000
+    model: Optional[str] = None  # "gemini" or "gpt-4.1"
+    force_regenerate: bool = False  # Regenerate even if rule exists
 
 
 # ============================================================
@@ -304,221 +316,236 @@ def find_matching_ranges(code: str, all_ranges: List[str]) -> List[str]:
 
 def get_all_codes_from_db() -> List[Dict]:
     """
-    Получает все коды из базы данных с информацией о документах.
-    Поддерживает иерархическое наследование:
-    - wildcard patterns (E11.%)
-    - range patterns (47531:47541)
-
-    Для каждого конкретного кода добавляет документы из:
-    1. explicit match (E11.9)
-    2. wildcard parents (E11.%, E%)
-    3. range patterns (47531:47541)
-
-    Исключает policy документы.
+    Получает все коды из таблицы code_hierarchy.
+    Фильтрует по 5 демо-категориям болезней.
+    Проверяет статус правил из rules_hierarchy.
+    Наследует документы от метакатегорий.
+    Результат кэшируется на 30 секунд.
     """
+    global _codes_cache, _codes_cache_time
+
+    import time
+    now = time.time()
+
+    # Return cached result if still valid
+    if _codes_cache and (now - _codes_cache_time) < _CACHE_TTL:
+        return _codes_cache
+
+    from src.utils.code_categories import get_code_category, is_ignored_code
+
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Get all code patterns from DB
+    # Get codes from code_hierarchy (level 1+ = category, subcategory, code)
     cursor.execute("""
-        SELECT
-            dc.code_pattern as code,
-            dc.code_type,
-            dc.document_id,
-            d.filename
+        SELECT DISTINCT
+            ch.pattern,
+            ch.code_type,
+            ch.level,
+            ch.parent_pattern,
+            ch.description
+        FROM code_hierarchy ch
+        WHERE ch.level >= 1
+        ORDER BY ch.pattern
+    """)
+    hierarchy_rows = cursor.fetchall()
+
+    # Get rules from rules_hierarchy
+    cursor.execute("""
+        SELECT pattern, code_type, rule_type, rule_id, status
+        FROM rules_hierarchy
+    """)
+    rules_rows = cursor.fetchall()
+
+    # Get documents linked to meta-categories (E, F, I, etc.)
+    cursor.execute("""
+        SELECT dc.code_pattern, dc.code_type, dc.document_id, d.filename
         FROM document_codes dc
         JOIN documents d ON dc.document_id = d.file_hash
         WHERE d.parsed_at IS NOT NULL
-          AND (d.doc_type IS NULL OR d.doc_type != 'policy')
-        GROUP BY dc.code_pattern, dc.code_type, dc.document_id
-        ORDER BY dc.code_pattern
+          AND d.doc_type IN ('clinical_guideline', 'codebook')
+          AND LENGTH(dc.code_pattern) <= 2
     """)
+    doc_rows = cursor.fetchall()
 
-    rows = cursor.fetchall()
     conn.close()
 
-    # Classify codes into categories
-    codes_map = {}         # Specific codes
-    wildcard_codes = {}    # Wildcard patterns (E11.%)
-    range_codes = {}       # Range patterns (47531:47541)
+    # Get rules cache from filesystem (for CMS status)
+    rules_cache = _get_rules_cache()
 
-    for row in rows:
-        code = row[0].upper()
-        code_type = row[1] or 'ICD-10'
-        doc_id = row[2]
-        filename = row[3]
+    # Build document lookup: meta_category:code_type -> [{id, filename}]
+    docs_by_meta = {}
+    for row in doc_rows:
+        meta_cat, code_type, doc_id, filename = row
+        key = f"{meta_cat.upper()}:{code_type}"
+        if key not in docs_by_meta:
+            docs_by_meta[key] = []
+        docs_by_meta[key].append({'id': doc_id, 'filename': filename})
 
-        doc_info = {
-            'id': doc_id,
-            'filename': filename,
-            'via_pattern': None
-        }
+    # Build rules lookup: pattern:code_type -> {guideline: rule_id, cms1500: rule_id}
+    rules_lookup = {}
+    for row in rules_rows:
+        pattern, code_type, rule_type, rule_id, status = row
+        key = f"{pattern}:{code_type}"
+        if key not in rules_lookup:
+            rules_lookup[key] = {}
+        rules_lookup[key][rule_type] = {'rule_id': rule_id, 'status': status}
 
-        if is_wildcard_code(code):
-            if code not in wildcard_codes:
-                wildcard_codes[code] = {'type': code_type, 'documents': []}
-            wildcard_codes[code]['documents'].append(doc_info)
+    # Build codes list, filtering by demo categories
+    codes_list = []
+    seen_codes = set()
 
-        elif is_range_code(code):
-            if code not in range_codes:
-                range_codes[code] = {'type': code_type, 'documents': []}
-            range_codes[code]['documents'].append(doc_info)
+    for row in hierarchy_rows:
+        pattern, code_type, level, parent_pattern, description = row
 
-        else:
-            # Specific code
-            if code not in codes_map:
-                codes_map[code] = {
-                    'code': code,
-                    'type': code_type,
-                    'documents': [],
-                    'inherited_documents': [],
-                    'total_docs': 0
-                }
-            codes_map[code]['documents'].append(doc_info)
-
-    # Add wildcard patterns as "codes" too (for UI hierarchy)
-    for pattern, data in wildcard_codes.items():
-        codes_map[pattern] = {
-            'code': pattern,
-            'type': data['type'],
-            'documents': data['documents'],
-            'inherited_documents': [],
-            'total_docs': len(data['documents']),
-            'is_wildcard': True
-        }
-
-    # Add ranges as "codes" too
-    for pattern, data in range_codes.items():
-        codes_map[pattern] = {
-            'code': pattern,
-            'type': data['type'],
-            'documents': data['documents'],
-            'inherited_documents': [],
-            'total_docs': len(data['documents']),
-            'is_range': True
-        }
-
-    # Calculate inheritance for specific codes
-    all_ranges = list(range_codes.keys())
-
-    for code, data in codes_map.items():
-        # Skip patterns - they don't inherit
-        if is_wildcard_code(code) or is_range_code(code):
+        # Skip if already seen
+        if pattern in seen_codes:
             continue
 
-        seen_doc_ids = {d['id'] for d in data['documents']}
+        # Skip ignored codes (modifiers, too short)
+        if is_ignored_code(pattern, code_type):
+            continue
 
-        # Inherit from wildcard parents
-        patterns = get_wildcard_patterns_for_code(code)
-        for pattern in patterns:
-            if pattern in wildcard_codes:
-                for doc in wildcard_codes[pattern]['documents']:
-                    if doc['id'] not in seen_doc_ids:
-                        data['inherited_documents'].append({
-                            'id': doc['id'],
-                            'filename': doc['filename'],
-                            'via_pattern': pattern
-                        })
-                        seen_doc_ids.add(doc['id'])
+        # Check if code belongs to a demo category
+        cat_info = get_code_category(pattern)
+        if not cat_info['category']:
+            continue
 
-        # Inherit from matching ranges
-        matching_ranges = find_matching_ranges(code, all_ranges)
-        for range_pattern in matching_ranges:
-            for doc in range_codes[range_pattern]['documents']:
-                if doc['id'] not in seen_doc_ids:
-                    data['inherited_documents'].append({
-                        'id': doc['id'],
-                        'filename': doc['filename'],
-                        'via_pattern': range_pattern
-                    })
-                    seen_doc_ids.add(doc['id'])
+        seen_codes.add(pattern)
 
-        # Calculate total
-        data['total_docs'] = len(data['documents']) + len(data['inherited_documents'])
+        # Check rule status from DB
+        key = f"{pattern}:{code_type}"
+        rule_info = rules_lookup.get(key, {})
 
-    return list(codes_map.values())
+        # Also check filesystem cache for rules
+        file_cache = rules_cache.get(pattern.upper(), {})
+        guideline_versions = file_cache.get('guideline_versions', [])
+        cms_versions = file_cache.get('cms_versions', [])
+        has_guideline_file = bool(guideline_versions)
+        has_cms_file = bool(cms_versions)
+
+        # Get latest versions
+        guideline_version = int(guideline_versions[-1][1:]) if guideline_versions else None
+        cms_version = int(cms_versions[-1][1:]) if cms_versions else None
+
+        # Get documents from meta-category (first letter of code)
+        meta_category = pattern[0].upper() if pattern else ""
+        meta_key = f"{meta_category}:{code_type}"
+        inherited_docs = docs_by_meta.get(meta_key, [])
+
+        codes_list.append({
+            'code': pattern,
+            'type': code_type,
+            'level': level,
+            'parent': parent_pattern,
+            'description': description or '',
+            'documents': [],
+            'inherited_documents': inherited_docs,
+            'total_docs': len(inherited_docs),
+            'has_guideline': 'guideline' in rule_info or has_guideline_file,
+            'has_cms1500': 'cms1500' in rule_info or has_cms_file,
+            'guideline_rule_id': rule_info.get('guideline', {}).get('rule_id'),
+            'cms1500_rule_id': rule_info.get('cms1500', {}).get('rule_id'),
+            'guideline_version': guideline_version,
+            'cms_version': cms_version,
+        })
+
+    # Cache the result
+    _codes_cache = codes_list
+    _codes_cache_time = now
+
+    return codes_list
 
 
-def get_rule_status(code: str, cascade: bool = True) -> Dict:
+def get_rule_status(code: str, cascade: bool = True, rule_type: str = "guideline") -> Dict:
     """
-    Проверяет статус правила для кода.
+    Проверяет статус правила для кода из rules_hierarchy.
 
     Args:
         code: Код для проверки
-        cascade: Если True, ищет правило каскадно (E11.9 → E11.% → E%)
+        cascade: Если True, ищет правило каскадно (E11.9 → E11 → E)
+        rule_type: "guideline" или "cms1500"
 
     Returns:
         {
             'has_rule': bool,
-            'is_mock': bool,
             'is_inherited': bool,      # True если правило от родительского паттерна
             'matched_pattern': str,    # какой паттерн сработал
-            'version': int,
-            'created_at': str,
+            'rule_id': int,
             'path': str
         }
     """
+    from src.generators.hierarchy_rule_generator import get_hierarchy_patterns
+
     # Determine search patterns
     if cascade:
-        patterns_to_check = get_rule_cascade(code)
+        patterns_to_check = get_hierarchy_patterns(code, "ICD-10")
     else:
         patterns_to_check = [code.upper()]
 
-    for pattern in patterns_to_check:
-        result = _check_rule_exists(pattern)
-        if result['has_rule']:
-            result['is_inherited'] = pattern.upper() != code.upper()
-            result['matched_pattern'] = pattern
-            return result
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
+    for pattern in patterns_to_check:
+        cursor.execute("""
+            SELECT rule_id, status FROM rules_hierarchy
+            WHERE pattern = ? AND rule_type = ?
+        """, (pattern, rule_type))
+        row = cursor.fetchone()
+
+        if row:
+            rule_id, status = row
+            # Get path from rules table
+            cursor.execute("SELECT rule_path FROM rules WHERE id = ?", (rule_id,))
+            path_row = cursor.fetchone()
+            path = path_row[0] if path_row else None
+
+            conn.close()
+            return {
+                'has_rule': True,
+                'is_inherited': pattern.upper() != code.upper(),
+                'matched_pattern': pattern,
+                'rule_id': rule_id,
+                'status': status,
+                'path': path
+            }
+
+    conn.close()
     return {
         'has_rule': False,
-        'is_mock': False,
         'is_inherited': False,
-        'matched_pattern': None
+        'matched_pattern': None,
+        'rule_id': None,
+        'path': None
     }
 
 
 def _check_rule_exists(pattern: str) -> Dict:
-    """Проверяет существование правила для конкретного паттерна (используя кэш)."""
-    cache = _get_rules_cache()
-    pattern_upper = pattern.upper()
+    """Проверяет существование правила для конкретного паттерна в БД."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-    # Check cache first (fast path)
-    if pattern_upper in cache:
-        cached = cache[pattern_upper]
-        versions = cached.get('guideline_versions', [])
-        if versions:
-            latest = versions[-1]
-            return {
-                'has_rule': True,
-                'is_mock': False,  # Don't load JSON just to check this
-                'version': int(latest[1:]),
-                'created_at': None,
-                'validation_status': 'unknown',
-                'path': os.path.join(cached['path'], latest, "rule.json")
-            }
+    cursor.execute("""
+        SELECT rule_id, status FROM rules_hierarchy
+        WHERE pattern = ? AND rule_type = 'guideline'
+    """, (pattern.upper(),))
+    row = cursor.fetchone()
 
-    # Cache miss - check filesystem (shouldn't happen often)
-    safe_pattern = pattern.replace(".", "_").replace("/", "_").replace(":", "_").replace("-", "_")
-    versioned_path = os.path.join(RULES_DIR, safe_pattern)
+    if row:
+        rule_id, status = row
+        cursor.execute("SELECT rule_path FROM rules WHERE id = ?", (rule_id,))
+        path_row = cursor.fetchone()
+        conn.close()
 
-    if os.path.exists(versioned_path) and os.path.isdir(versioned_path):
-        versions = [d for d in os.listdir(versioned_path) if d.startswith('v') and d[1:].isdigit()]
-        if versions:
-            latest = sorted(versions, key=lambda x: int(x[1:]))[-1]
-            rule_path = os.path.join(versioned_path, latest, "rule.json")
-            if os.path.exists(rule_path):
-                return {
-                    'has_rule': True,
-                    'is_mock': False,
-                    'version': int(latest[1:]),
-                    'created_at': None,
-                    'validation_status': 'unknown',
-                    'path': rule_path
-                }
+        return {
+            'has_rule': True,
+            'rule_id': rule_id,
+            'status': status,
+            'path': path_row[0] if path_row else None
+        }
 
-    return {'has_rule': False, 'is_mock': False}
+    conn.close()
+    return {'has_rule': False}
 
 
 def find_rule_for_code(code: str) -> Optional[Dict]:
@@ -540,16 +567,22 @@ def find_rule_for_code(code: str) -> Optional[Dict]:
         return None
 
     try:
-        with open(status['path'], 'r') as f:
+        # Path from DB is directory, need to add rule.json
+        rule_path = status['path']
+        if rule_path and os.path.isdir(rule_path):
+            rule_path = os.path.join(rule_path, 'rule.json')
+
+        with open(rule_path, 'r') as f:
             rule_data = json.load(f)
 
         return {
             'pattern': status['matched_pattern'],
             'is_inherited': status['is_inherited'],
             'rule_data': rule_data,
-            'path': status['path']
+            'path': rule_path
         }
-    except:
+    except Exception as e:
+        print(f"Error loading rule for {code}: {e}")
         return None
 
 
@@ -579,11 +612,11 @@ async def get_categories(rule_type: Optional[str] = "guideline"):
 
     categories = []
     for category_name, codes in grouped.items():
-        # Count rules based on rule_type
+        # Count rules - use pre-fetched data from get_all_codes_from_db()
         if rule_type == "cms":
-            codes_with_rules = sum(1 for c in codes if get_cms_rule_status(c['code'])['has_rule'])
+            codes_with_rules = sum(1 for c in codes if c.get('has_cms1500'))
         else:
-            codes_with_rules = sum(1 for c in codes if get_rule_status(c['code'])['has_rule'])
+            codes_with_rules = sum(1 for c in codes if c.get('has_guideline'))
 
         # Get color from first code's category_info (safe access)
         category_info = codes[0].get('category_info', {}) if codes else {}
@@ -626,7 +659,17 @@ async def get_codes_by_category(category_name: str):
     procedures = []
 
     for code_info in codes:
-        rule_status = get_rule_status(code_info['code'])
+        # Use pre-fetched rule status from get_all_codes_from_db()
+        guideline_ver = code_info.get('guideline_version')
+        rule_status = {
+            'has_rule': code_info.get('has_guideline', False),
+            'has_cms1500': code_info.get('has_cms1500', False),
+            'rule_id': code_info.get('guideline_rule_id'),
+            'cms1500_rule_id': code_info.get('cms1500_rule_id'),
+            'version': guideline_ver,  # backwards compatibility
+            'guideline_version': guideline_ver,
+            'cms_version': code_info.get('cms_version'),
+        }
         enriched = {
             **code_info,
             'rule_status': rule_status
@@ -951,20 +994,26 @@ async def get_generation_log(code: str, version: Optional[int] = None):
 async def generate_rule_endpoint(code: str, request: GenerateRuleRequest):
     """
     Генерирует правило для кода с SSE стримингом прогресса.
+    Использует HierarchyRuleGenerator для каскадной генерации.
 
     Pipeline: Draft → Validation (Mentor + RedTeam) → Arbitration → Final
+    Cascade: E → E11 → E11.9 (top-down with inheritance)
 
     SSE Event Format:
     {
-        "step": "draft|mentor|redteam|arbitration|finalization|pipeline",
-        "type": "status|thought|content|verification|done|error",
+        "step": "guideline|draft|mentor|redteam|arbitration|finalization|pipeline",
+        "type": "plan|generating|status|thought|content|verification|done|complete|error",
         "content": "...",
-        "full_text": "...",  // on done
-        "duration_ms": 15000  // on done
+        "patterns_to_generate": [...],  // on plan
+        "existing_patterns": [...],     // on plan
+        "pattern": "E11",               // on generating
+        "parent_rule": "E",             // on generating (if inheriting)
+        "full_text": "...",             // on done
+        "duration_ms": 15000            // on done
     }
     """
-    # Check sources exist
-    sources_ctx = build_sources_context(code, request.document_ids)
+    # Check sources exist for the target code
+    sources_ctx = build_sources_context(code, request.document_ids, code_type=request.code_type)
 
     if not sources_ctx.sources_text:
         raise HTTPException(
@@ -973,15 +1022,18 @@ async def generate_rule_endpoint(code: str, request: GenerateRuleRequest):
         )
 
     async def event_stream():
-        generator = RuleGenerator(thinking_budget=request.thinking_budget)
+        generator = HierarchyRuleGenerator(thinking_budget=request.thinking_budget, model=request.model)
 
-        async for event in generator.stream_pipeline(
+        async for event in generator.generate_guideline(
             code=code,
-            document_ids=request.document_ids,
             code_type=request.code_type,
-            parallel_validators=request.parallel_validators
+            document_ids=request.document_ids,
+            force_regenerate=request.force_regenerate
         ):
             yield f"data: {event}\n\n"
+
+        # Invalidate cache after generation
+        invalidate_rules_cache()
 
     return StreamingResponse(
         event_stream(),
@@ -1258,30 +1310,41 @@ async def get_cms_generation_log(code: str, version: Optional[int] = None):
 async def generate_cms_rule_endpoint(code: str, request: GenerateCMSRuleRequest):
     """
     Генерирует CMS-1500 claim validation правило для кода.
+    Использует HierarchyRuleGenerator для каскадной генерации.
 
     Pipeline:
-    1. Load guideline rule (if exists)
-    2. Fetch NCCI edits (for CPT/HCPCS)
-    3. Transform to CMS rules (Markdown)
-    4. Parse to structured JSON
+    1. Check prerequisite (guideline rule must exist)
+    2. Generate cascade: E → E11 → E11.9 (top-down with inheritance)
+    3. Each level: Load parent CMS rule + guideline rule + NCCI edits
+    4. Transform to CMS rules (Markdown)
+    5. Parse to structured JSON
 
     SSE Event Format:
     {
-        "step": "transform|parse|pipeline",
-        "type": "status|thought|content|done|error",
+        "step": "cms1500|transform|parse|pipeline",
+        "type": "plan|generating|status|thought|content|done|complete|error",
         "content": "...",
-        "full_text": "...",  // on done
-        "duration_ms": 15000  // on done
+        "patterns_to_generate": [...],  // on plan
+        "existing_patterns": [...],     // on plan
+        "pattern": "E11",               // on generating
+        "parent_rule": "E",             // on generating (if inheriting)
+        "prerequisite_met": bool,       // on error (if prerequisite failed)
+        "full_text": "...",             // on done
+        "duration_ms": 15000            // on done
     }
     """
     async def event_stream():
-        generator = CMSRuleGenerator(thinking_budget=request.thinking_budget)
+        generator = HierarchyRuleGenerator(thinking_budget=request.thinking_budget, model=request.model)
 
-        async for event in generator.stream_pipeline(
+        async for event in generator.generate_cms1500(
             code=code,
-            code_type=request.code_type
+            code_type=request.code_type or "ICD-10",
+            force_regenerate=request.force_regenerate
         ):
             yield f"data: {event}\n\n"
+
+        # Invalidate cache after generation
+        invalidate_rules_cache()
 
     return StreamingResponse(
         event_stream(),

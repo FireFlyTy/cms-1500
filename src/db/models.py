@@ -150,6 +150,94 @@ CREATE TABLE IF NOT EXISTS rules (
 CREATE INDEX IF NOT EXISTS idx_rules_code ON rules(code);
 CREATE INDEX IF NOT EXISTS idx_rules_status ON rules(status);
 
+-- ============================================================
+-- CODE HIERARCHY (Category → Subcategory → Code)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS code_hierarchy (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code_type TEXT NOT NULL,           -- 'ICD-10', 'CPT', 'HCPCS'
+    level INTEGER NOT NULL,            -- 1=category, 2=subcategory, 3=code
+    pattern TEXT NOT NULL,             -- 'E11', 'E11.6', 'E11.65'
+    parent_pattern TEXT,               -- NULL for level 1, parent for others
+    description TEXT,
+    chapter TEXT,                      -- For ICD-10: chapter name (e.g., "Endocrine")
+    meta_category TEXT,                -- First letter/digit: 'E', 'F', '9', 'J' etc.
+    UNIQUE(code_type, pattern)
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_hierarchy_pattern ON code_hierarchy(pattern);
+CREATE INDEX IF NOT EXISTS idx_code_hierarchy_parent ON code_hierarchy(parent_pattern);
+CREATE INDEX IF NOT EXISTS idx_code_hierarchy_level ON code_hierarchy(level);
+CREATE INDEX IF NOT EXISTS idx_code_hierarchy_type_level ON code_hierarchy(code_type, level);
+CREATE INDEX IF NOT EXISTS idx_code_hierarchy_meta ON code_hierarchy(code_type, meta_category);
+
+-- ============================================================
+-- TOPICS DICTIONARY (Predefined medical topics)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS topics_dictionary (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    category TEXT NOT NULL,            -- 'disease', 'procedure', 'anatomy', 'treatment'
+    aliases TEXT,                      -- JSON array: ["T2DM", "Type II Diabetes"]
+    description TEXT,
+    parent_topic_id INTEGER,           -- For hierarchical topics
+    icd10_patterns TEXT,               -- JSON array: ["E11%", "E08%"]
+    cpt_patterns TEXT,                 -- JSON array: ["9921%"]
+    hcpcs_patterns TEXT,               -- JSON array: ["J195%"]
+    FOREIGN KEY (parent_topic_id) REFERENCES topics_dictionary(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_topics_category ON topics_dictionary(category);
+CREATE INDEX IF NOT EXISTS idx_topics_name ON topics_dictionary(name);
+
+-- ============================================================
+-- DOCUMENT TOPICS (Links documents to predefined topics)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS document_topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id TEXT NOT NULL,
+    topic_id INTEGER NOT NULL,
+    anchor_start TEXT,                 -- First 5-10 words of paragraph
+    anchor_end TEXT,                   -- Last 5-10 words of paragraph
+    page INTEGER,
+    confidence REAL DEFAULT 1.0,       -- Extraction confidence
+    extracted_by TEXT,                 -- 'gemini', 'gpt5', 'gpt4', 'manual'
+    validated INTEGER DEFAULT 0,       -- 0=draft, 1=validated
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (topic_id) REFERENCES topics_dictionary(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_topics_doc ON document_topics(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_topics_topic ON document_topics(topic_id);
+
+-- ============================================================
+-- RULES HIERARCHY (Track rule inheritance)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS rules_hierarchy (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern TEXT NOT NULL,             -- 'E11', 'E11.6', 'E11.65' (from code_hierarchy)
+    pattern_type TEXT NOT NULL,        -- 'meta_category', 'category', 'subcategory', 'code'
+    code_type TEXT NOT NULL,           -- 'ICD-10', 'CPT', 'HCPCS'
+    rule_type TEXT NOT NULL DEFAULT 'guideline',  -- 'guideline' or 'cms1500'
+    parent_pattern TEXT,               -- Parent in hierarchy (from code_hierarchy)
+    rule_id INTEGER,                   -- FK to rules table (NULL if same_as_parent)
+    has_own_rule INTEGER DEFAULT 0,    -- 1 if this pattern has its own generated rule
+    inherits_from TEXT,                -- Pattern from which rule is inherited (for same_as_parent)
+    status TEXT DEFAULT 'pending',     -- 'pending', 'ready', 'same_as_parent', 'failed'
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(code_type, pattern, rule_type),
+    FOREIGN KEY (rule_id) REFERENCES rules(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rules_hierarchy_pattern ON rules_hierarchy(pattern);
+CREATE INDEX IF NOT EXISTS idx_rules_hierarchy_type ON rules_hierarchy(code_type);
+CREATE INDEX IF NOT EXISTS idx_rules_hierarchy_rule_type ON rules_hierarchy(rule_type);
+
 -- Insert default categories
 INSERT OR IGNORE INTO categories (category_type, name, description) VALUES
     -- Medical categories

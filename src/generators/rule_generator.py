@@ -26,7 +26,7 @@ from datetime import datetime
 from string import Template
 
 from .context_builder import build_sources_context, SourcesContext, SourceDocument
-from .core_ai import stream_gemini_generator
+from .core_ai import stream_gemini_generator, stream_openai_model
 from .prompts import (
     PROMPT_CODE_RULE_DRAFT,
     PROMPT_CODE_RULE_VALIDATION_MENTOR,
@@ -111,58 +111,78 @@ class SSEEvent:
 class RuleGenerator:
     """
     Оркестратор пайплайна генерации правил.
-    
+
     Usage:
         generator = RuleGenerator()
         async for event in generator.stream_pipeline("E11.9"):
             yield f"data: {event}\\n\\n"
     """
-    
-    def __init__(self, thinking_budget: int = 10000):
+
+    # Default model - can be overridden via env var or constructor
+    DEFAULT_MODEL = os.getenv("RULE_GENERATOR_MODEL", "gemini")  # "gemini" or "gpt-4.1"
+
+    def __init__(self, thinking_budget: int = 10000, model: str = None):
         self.thinking_budget = thinking_budget
+        self.model = model or self.DEFAULT_MODEL
         self._sources_ctx: Optional[SourcesContext] = None
         self._doc_pages: Optional[Dict] = None
         self._results: Dict[str, StepResult] = {}
-    
+        self._inheritance_context: Optional[str] = None
+
+    async def _stream_model(self, prompt: str) -> AsyncGenerator[str, None]:
+        """Stream from configured model (Gemini or OpenAI)."""
+        if self.model.startswith("gpt"):
+            async for chunk in stream_openai_model(prompt, model=self.model):
+                yield chunk
+        else:
+            # Default to Gemini
+            async for chunk in stream_gemini_generator(prompt, self.thinking_budget):
+                yield chunk
+
     async def stream_pipeline(
         self,
         code: str,
         document_ids: Optional[List[str]] = None,
         code_type: str = "ICD-10",
         parallel_validators: bool = False,
+        inheritance_context: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Стримит полный пайплайн генерации правила.
-        
+
         Args:
             code: ICD-10 код
             document_ids: Опционально - конкретные документы
             code_type: Тип кода (ICD-10, CPT, etc.)
             parallel_validators: True для параллельного запуска Mentor+RedTeam
-            
+            inheritance_context: Контекст наследования (родительские правила)
+
         Yields:
             JSON SSE events
         """
         pipeline_start = time.time()
-        
+        self._inheritance_context = inheritance_context
+
         try:
             # 1. Build sources context
             yield self._event("pipeline", "status", "Building sources context...").to_json()
-            
-            self._sources_ctx = build_sources_context(code, document_ids)
-            
-            if not self._sources_ctx.sources_text:
+
+            self._sources_ctx = build_sources_context(code, document_ids, code_type=code_type)
+
+            # Allow empty sources if we have inheritance context
+            if not self._sources_ctx.sources_text and not inheritance_context:
                 yield self._event("pipeline", "error", f"No documents found for code {code}").to_json()
                 return
-            
+
             # Parse sources for citation verification
-            self._doc_pages = parse_sources_to_pages(self._sources_ctx.sources_text)
-            
-            yield self._event("pipeline", "status", 
+            self._doc_pages = parse_sources_to_pages(self._sources_ctx.sources_text) if self._sources_ctx.sources_text else {}
+
+            yield self._event("pipeline", "status",
                 f"Found {len(self._sources_ctx.source_documents)} documents, "
                 f"{self._sources_ctx.total_pages} pages"
+                + (f" + inheritance context" if inheritance_context else "")
             ).to_json()
-            
+
             # 2. DRAFT
             async for event in self._stream_draft(code, code_type):
                 yield event
@@ -209,9 +229,14 @@ class RuleGenerator:
         """Генерирует Draft."""
         step = "draft"
         yield self._event(step, "status", "Generating draft...").to_json()
-        
+
+        # Build sources with optional inheritance context
+        sources_text = self._sources_ctx.sources_text or ""
+        if self._inheritance_context:
+            sources_text = self._inheritance_context + "\n\n" + sources_text
+
         prompt = PROMPT_CODE_RULE_DRAFT.substitute(
-            sources=self._sources_ctx.sources_text,
+            sources=sources_text,
             code=code,
             code_type=code_type,
             description=self._sources_ctx.code_description or f"See source documents"
@@ -354,7 +379,7 @@ class RuleGenerator:
         
         async def stream_to_queue(prompt: str, queue: asyncio.Queue, step: str, result: dict):
             try:
-                async for chunk in stream_gemini_generator(prompt, self.thinking_budget):
+                async for chunk in self._stream_model(prompt):
                     data = json.loads(chunk.strip())
                     data["step"] = step
                     
@@ -565,8 +590,8 @@ class RuleGenerator:
         start_time = time.time()
         full_text = ""
         thinking = ""
-        
-        async for chunk in stream_gemini_generator(prompt, self.thinking_budget):
+
+        async for chunk in self._stream_model(prompt):
             data = json.loads(chunk.strip())
             
             if data["type"] == "thought":

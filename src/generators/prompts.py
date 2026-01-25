@@ -9,6 +9,75 @@ Citation format: [[doc_id:page | "anchor phrase"]]
 from string import Template
 
 # ---------------------------------------------------------
+# SHARED: INHERITANCE RULES (For hierarchical rule generation)
+# ---------------------------------------------------------
+INHERITANCE_RULES = '''
+=== INHERITANCE STRATEGY: CREATE STANDALONE RULE ===
+
+You are creating a validation rule for a CHILD code.
+The runtime will execute *ONLY* this specific rule if it exists.
+Therefore, this rule must be COMPLETE and SELF-CONTAINED.
+
+1. **IMPORT PARENT CONSTRAINTS (Crucial)**
+   - Start by including ALL validation criteria from the Parent Rule.
+   - Do NOT reference them ("See parent rule"). Write them out explicitly.
+   - Reason: If you omit them, they will not be checked at runtime.
+
+2. **EXTEND WITH SPECIFICS**
+   - Add new criteria that apply only to this specific code level.
+   - Mark new additions with comment: // NEW for {code}
+
+3. **OVERRIDE ONLY ON CONFLICT**
+   - Only modify a Parent criterion if this specific code is an *exception*.
+   - Mark overrides with comment: // OVERRIDE parent rule
+
+4. **CHECK FOR REDUNDANCY**
+   - If the Child rule is EXACTLY identical to Parent (no additions, no overrides):
+   - Output ONLY: "## STATUS: SAME_AS_PARENT"
+   - Do NOT generate full rule content - the system will use parent rule.
+   - This saves storage and ensures consistency.
+
+If NO parent rule is provided → generate complete standalone rule.
+'''
+
+# ---------------------------------------------------------
+# SHARED: CMS-1500 INHERITANCE RULES
+# ---------------------------------------------------------
+CMS_INHERITANCE_RULES = '''
+=== CMS-1500 INHERITANCE STRATEGY (CRITICAL) ===
+
+**IMPORTANT**: Child codes MUST include ALL parent rules. The runtime executes ONLY this file.
+
+## RULE INHERITANCE ORDER
+
+1. **COPY ALL PARENT CMS-1500 RULES FIRST**
+   - If "Parent CMS-1500 Rule" section below has rules → COPY EVERY ONE
+   - Mark each as [INHERITED from {parent_code}]
+   - Do NOT skip any parent rule unless guideline explicitly contradicts it
+
+2. **ADD NEW RULES FROM THIS CODE'S GUIDELINE**
+   - Convert THIS code's guideline criteria to CMS-1500 rules
+   - Mark each as [NEW from guideline]
+
+3. **ADD NCCI EDITS FOR THIS CODE**
+   - Include bundling (PTP) and unit limits (MUE)
+   - Mark each as [NCCI]
+
+4. **OVERRIDE ON CONFLICT ONLY**
+   - If THIS guideline contradicts a parent rule → override and mark: [OVERRIDE]
+   - Keep unchanged parent rules as [INHERITED]
+
+5. **SAME_AS_PARENT CHECK**
+   - If output rules are 100% identical to parent (no new rules from guideline):
+   - Output ONLY: "## STATUS: SAME_AS_PARENT"
+
+⚠️ WRONG: Output with 0 rules when parent has 5 rules
+✓ RIGHT: Output with 5+ rules (5 inherited + any new)
+
+If NO parent CMS-1500 rule → generate from guideline + NCCI only.
+'''
+
+# ---------------------------------------------------------
 # SHARED: PAGE IDENTIFICATION RULE (MULTI-DOCUMENT)
 # ---------------------------------------------------------
 PAGE_IDENTIFICATION_RULE_MULTI = '''
@@ -55,8 +124,10 @@ You are a Forensic Medical Auditor and Data Extractor. Your task is to create va
 
 ''' + PAGE_IDENTIFICATION_RULE_MULTI + '''
 
+''' + INHERITANCE_RULES + '''
+
 INPUT DATA:
-Source Documents:
+Source Documents (may include PARENT RULE at the beginning):
 $sources
 -----
 Code for validation:
@@ -907,6 +978,8 @@ PROMPT_CMS_RULE_TRANSFORM = Template('''
 You are a Claims Validation Rule Transformer. Your task is to convert
 coding guidelines into executable CMS-1500 claim validation rules.
 
+''' + CMS_INHERITANCE_RULES + '''
+
 ## INPUT DATA
 
 ### 1. Code Information
@@ -914,22 +987,33 @@ coding guidelines into executable CMS-1500 claim validation rules.
 - **Code Type**: $code_type
 - **Description**: $description
 
-### 2. Guideline Rule (Source)
+### 2. Parent CMS-1500 Rule (if exists)
+$parent_cms1500_rule
+
+### 3. Guideline Rule for THIS Code
 $guideline_rule
 
-### 3. NCCI Edits (from Database)
+### 4. NCCI Edits (from Database)
 $ncci_edits
 
-### 4. CMS-1500 Claim Schema (Available Fields)
+### 5. CMS-1500 Claim Schema (Available Fields)
 $cms1500_schema
 
 ---
 
 ## YOUR TASK
 
-Analyze the Guideline Rule and NCCI Edits. For each rule/statement in the guideline:
+**STEP 0: INHERIT PARENT RULES (CRITICAL)**
 
-**STEP 1: Classification**
+If Parent CMS-1500 Rule exists above:
+- COPY ALL validatable rules from it into your output
+- Keep the SAME rule IDs, types, severities, conditions, messages
+- These rules apply to child codes by inheritance
+- Only OMIT a parent rule if the guideline for THIS code explicitly contradicts it
+
+**STEP 1: Classification (for THIS code's guideline)**
+
+Analyze the Guideline Rule and NCCI Edits. For each rule/statement in the guideline:
 
 Determine if the rule can be validated using ONLY the CMS-1500 fields above:
 
@@ -985,16 +1069,40 @@ For CPT/HCPCS codes, include NCCI edits:
 # CMS-1500 Claim Rules: $code
 
 ## SOURCES USED
+- **Parent CMS-1500**: {parent code} (or "None - top-level")
 - **Guideline Rule**: v{version} from {doc_ids}
 - **NCCI PTP**: {count} bundling edits (or "Not applicable - ICD-10 code")
 - **NCCI MUE**: Max {value} units per {day/line} (or "Not applicable")
 
+## ANALYSIS OF PARENT RULES
+
+(Skip this section if no parent CMS-1500 rule exists)
+
+List ALL rules from Parent CMS-1500 and their disposition:
+
+| # | Parent Rule ID | Parent Rule Summary | Disposition |
+|---|----------------|---------------------|-------------|
+| 1 | {E00-XXX-001} | {brief description} | INHERIT / OVERRIDE / DROP |
+| 2 | {E00-XXX-002} | {brief description} | INHERIT / OVERRIDE / DROP |
+
+- **INHERIT**: Copy to this code's rules unchanged
+- **OVERRIDE**: This code's guideline contradicts - replace with new rule
+- **DROP**: This code's guideline explicitly negates - do not include (rare)
+
+**Parent rules to inherit**: {count}
+**Rules to override**: {count}
+**New rules from THIS guideline**: {count}
+
 ## VALIDATABLE RULES
 
-All rules that CAN be checked from CMS-1500 claim data, organized by severity:
+All rules including:
+1. **INHERITED from parent** (marked with [INHERITED])
+2. **NEW from THIS code's guideline**
+3. **NCCI rules** for THIS code
 
-### Rule {N}: {Short Descriptive Title}
+### Rule {N}: {Short Descriptive Title} [INHERITED] or [NEW]
 - **ID**: {CODE}-{TYPE}-{NNN} (e.g., E11.9-SEQ-001, E11.9-EXPECT-001)
+- **Origin**: [INHERITED from {parent_code}] or [NEW from guideline] or [NCCI]
 - **Type**: {diagnosis_conflict | sequencing | expected_code | bundling | unit_limit | age_check | gender_check | modifier_required | pos_required | precert_required}
 - **Severity**: {error | warning | info}
   - `error` = Auto-reject, definite violation
@@ -1008,9 +1116,9 @@ All rules that CAN be checked from CMS-1500 claim data, organized by severity:
   ```
 - **Action**: {REJECT | WARN | INFO}
 - **Message**: "{User-facing message explaining the issue or suggestion}"
-- **Source**: Guideline [[doc_id:page | "anchor phrase"]]
+- **Source**: Guideline [[doc_id:page | "anchor phrase"]] or "Inherited from {parent}"
 
-(Repeat for ALL validatable rules - errors, warnings, and info)
+(Repeat for ALL rules - first inherited from parent, then new from guideline, then NCCI)
 
 ## REMOVED RULES
 

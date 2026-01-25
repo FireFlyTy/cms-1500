@@ -6,6 +6,7 @@
 #   - context_builder.py: Source assembly from KB
 #   - rule_generator.py: Guideline rule pipeline orchestrator
 #   - cms_generator.py: CMS-1500 claim rules pipeline
+#   - hierarchy_rule_generator.py: Hierarchical cascade generation
 
 from .core_ai import stream_gemini_generator
 from .context_builder import (
@@ -27,6 +28,12 @@ from .cms_generator import (
     CMSPipelineResult,
     CMSStepResult,
     NCCIEdits,
+)
+from .hierarchy_rule_generator import (
+    HierarchyRuleGenerator,
+    HierarchyLevel,
+    RuleLookupResult,
+    GenerationPlan,
 )
 
 __all__ = [
@@ -52,4 +59,10 @@ __all__ = [
     'CMSPipelineResult',
     'CMSStepResult',
     'NCCIEdits',
+
+    # Hierarchy Rule Generator
+    'HierarchyRuleGenerator',
+    'HierarchyLevel',
+    'RuleLookupResult',
+    'GenerationPlan',
 ]

@@ -56,61 +56,120 @@ def get_doc_id(file_hash: str) -> str:
     return file_hash[:8]
 
 
-def get_wildcard_patterns_for_code(code: str) -> List[str]:
+def get_code_type_for_code(code: str) -> str:
     """
-    Генерирует wildcard паттерны которые могут покрывать данный код.
+    Определяет code_type по формату кода.
 
-    Для E11.9 возвращает:
-    - E11.%  (все E11.x)
-    - E1%.%  (все E1x.x) - опционально
-    - E%     (все E codes) - опционально
+    E11.9 → ICD-10 (has dot)
+    99213 → CPT (starts with digit)
+    J1950 → HCPCS (starts with letter, no dot)
+    """
+    if not code:
+        return 'ICD-10'
 
-    Для J1950:
-    - J1950
-    - J195%
-    - J19%
-    - J1%
-    - J%
+    code_upper = code.upper()
+
+    if '.' in code_upper:
+        return 'ICD-10'
+    elif code_upper[0].isdigit():
+        return 'CPT'
+    else:
+        return 'HCPCS'
+
+
+def get_meta_category_for_code(code: str, db_connection=None) -> Optional[str]:
+    """
+    Получает meta_category для кода из таблицы code_hierarchy.
+
+    Для E11.9 возвращает 'E'
+    Для J1950 возвращает 'J'
+    Для 99213 возвращает '9'
+
+    Args:
+        code: Код (E11.9, J1950, 99213)
+        db_connection: SQLite connection (если None, создаёт новый)
 
     Returns:
-        List of wildcard patterns (excluding exact match)
+        meta_category или None если не найдено
+    """
+    if not code:
+        return None
+
+    code_upper = code.upper()
+    code_type = get_code_type_for_code(code)
+
+    # Import here to avoid circular imports
+    from src.db.connection import get_db_connection
+
+    conn = db_connection or get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        # First try exact match
+        cursor.execute("""
+            SELECT meta_category FROM code_hierarchy
+            WHERE pattern = ? AND code_type = ?
+        """, (code_upper, code_type))
+        row = cursor.fetchone()
+
+        if row and row[0]:
+            return row[0]
+
+        # If not found, try without dot for ICD-10
+        if code_type == 'ICD-10':
+            # Try base pattern (E11.9 → E11)
+            base = code_upper.split('.')[0]
+            cursor.execute("""
+                SELECT meta_category FROM code_hierarchy
+                WHERE pattern = ? AND code_type = ?
+            """, (base, code_type))
+            row = cursor.fetchone()
+
+            if row and row[0]:
+                return row[0]
+
+        # Fallback: extract first character as meta_category
+        return code_upper[0] if code_upper else None
+
+    finally:
+        if db_connection is None:
+            conn.close()
+
+
+def get_wildcard_patterns_for_code(code: str, db_connection=None) -> List[str]:
+    """
+    Возвращает паттерны для поиска документов по коду.
+    Использует meta_category из code_hierarchy.
+
+    Для E11.9 возвращает ['E'] (мета-категория)
+    Для J1950 возвращает ['J']
+    Для 99213 возвращает ['9']
+
+    Args:
+        code: Код (E11.9, J1950, 99213)
+        db_connection: SQLite connection
+
+    Returns:
+        List с meta_category для поиска в document_codes
     """
     if not code:
         return []
 
-    code = code.upper()
-    patterns = []
+    meta_category = get_meta_category_for_code(code, db_connection)
 
-    # ICD-10 style codes (E11.9, F32.1, Z79.4)
-    if '.' in code:
-        parts = code.split('.')
-        base = parts[0]  # E11
+    if meta_category:
+        return [meta_category]
 
-        # Add base.% pattern
-        patterns.append(f"{base}.%")
-
-        # Add progressively shorter patterns
-        for i in range(len(base) - 1, 0, -1):
-            patterns.append(f"{base[:i]}%.%")
-
-        # Add single letter pattern
-        if len(base) >= 1:
-            patterns.append(f"{base[0]}%")
-
-    else:
-        # HCPCS/CPT style codes (J1950, 99213)
-        for i in range(len(code) - 1, 0, -1):
-            patterns.append(f"{code[:i]}%")
-
-    # Remove duplicates and return
-    return list(dict.fromkeys(patterns))
+    # Fallback: first character
+    return [code.upper()[0]] if code else []
 
 
 def build_sources_context(
     code: str,
     document_ids: Optional[List[str]] = None,
     db_connection=None,
-    expand_pages: int = 0
+    expand_pages: int = 0,
+    code_type: Optional[str] = None
 ) -> SourcesContext:
     """
     Собирает source documents для кода из Knowledge Base.
@@ -121,6 +180,7 @@ def build_sources_context(
                       Если None, берёт все документы где встречается код.
         db_connection: SQLite connection (если None, создаёт новый)
         expand_pages: Сколько страниц добавить до/после найденных (для контекста)
+        code_type: Тип кода ('ICD-10', 'CPT', 'HCPCS'). Если None, определяется автоматически.
 
     Returns:
         SourcesContext с форматированным текстом и метаданными
@@ -132,69 +192,26 @@ def build_sources_context(
     cursor = conn.cursor()
 
     try:
-        # Get description for the code from reference tables
+        # code_type MUST be provided - don't guess!
+        if code_type is None:
+            raise ValueError(f"code_type must be provided for code '{code}'")
+
+        # Get meta_category for this code (E11.9 → 'E')
+        meta_category = get_meta_category_for_code(code, conn)
         code_description = ""
-        code_upper = code.upper()
 
-        # Determine code type and get official description
-        if '.' in code_upper:
-            # ICD-10 code (has dot like E11.9) - stored without dots in icd10 table
-            icd_code = code_upper.replace(".", "")
-            cursor.execute(
-                "SELECT description FROM icd10 WHERE code = ?",
-                (icd_code,)
-            )
-            row = cursor.fetchone()
-            if row:
-                code_description = row[0]
-        elif code_upper[0].isdigit():
-            # CPT code (starts with digit like 99213) - check cpt table first
-            cursor.execute(
-                "SELECT description FROM cpt WHERE code = ?",
-                (code_upper,)
-            )
-            row = cursor.fetchone()
-            if row:
-                code_description = row[0] or ""
-            else:
-                # Fallback to hcpcs table (some CPT codes might be there)
-                cursor.execute(
-                    "SELECT long_description, short_description FROM hcpcs WHERE code = ?",
-                    (code_upper,)
-                )
-                row = cursor.fetchone()
-                if row:
-                    code_description = row[0] or row[1] or ""
-        else:
-            # HCPCS Level II code (starts with letter, no dot, like J1950)
-            cursor.execute(
-                "SELECT long_description, short_description FROM hcpcs WHERE code = ?",
-                (code_upper,)
-            )
-            row = cursor.fetchone()
-            if row:
-                code_description = row[0] or row[1] or ""
-
-        # Fallback to document_codes description if not found in reference tables
-        if not code_description:
-            cursor.execute("""
-                SELECT description FROM document_codes
-                WHERE code_pattern = ? AND description IS NOT NULL AND description != ''
-                LIMIT 1
-            """, (code,))
-            desc_row = cursor.fetchone()
-            code_description = desc_row[0] if desc_row else ""
-
-        # Build wildcard patterns that would match this code
-        # E11.9 → ['E11.9', 'E11.%', 'E1%.%', 'E%']
-        wildcard_patterns = get_wildcard_patterns_for_code(code)
+        # Get code description from code_hierarchy (works for categories and meta-categories)
+        cursor.execute(
+            "SELECT description FROM code_hierarchy WHERE pattern = ? AND code_type = ?",
+            (code.upper(), code_type)
+        )
+        row = cursor.fetchone()
+        if row and row[0]:
+            code_description = row[0]
 
         # Get document IDs, pages, and file info for this code
         # NOTE: document_codes.document_id = documents.file_hash
-        # FILTER: Exclude policy documents
-        # MATCH: Exact code OR wildcard patterns that cover this code
-        pattern_placeholders = ','.join('?' * len(wildcard_patterns))
-
+        # FILTER: Exclude policy documents, match by meta_category AND code_type
         if document_ids:
             doc_placeholders = ','.join('?' * len(document_ids))
             cursor.execute(f"""
@@ -206,12 +223,13 @@ def build_sources_context(
                     d.doc_type
                 FROM document_codes dc
                 JOIN documents d ON dc.document_id = d.file_hash
-                WHERE (dc.code_pattern = ? OR dc.code_pattern IN ({pattern_placeholders}))
+                WHERE dc.code_pattern = ?
+                  AND dc.code_type = ?
                   AND dc.document_id IN ({doc_placeholders})
                   AND (d.doc_type IS NULL OR d.doc_type != 'policy')
-            """, [code] + wildcard_patterns + document_ids)
+            """, [meta_category, code_type] + document_ids)
         else:
-            cursor.execute(f"""
+            cursor.execute("""
                 SELECT DISTINCT
                     dc.document_id,
                     d.file_hash,
@@ -220,9 +238,10 @@ def build_sources_context(
                     d.doc_type
                 FROM document_codes dc
                 JOIN documents d ON dc.document_id = d.file_hash
-                WHERE (dc.code_pattern = ? OR dc.code_pattern IN ({pattern_placeholders}))
+                WHERE dc.code_pattern = ?
+                  AND dc.code_type = ?
                   AND (d.doc_type IS NULL OR d.doc_type != 'policy')
-            """, [code] + wildcard_patterns)
+            """, [meta_category, code_type])
 
         rows = cursor.fetchall()
 
@@ -234,7 +253,27 @@ def build_sources_context(
                 code_description=code_description
             )
 
-        # Collect unique documents and their matched patterns
+        # Get page_numbers from document_codes for each document
+        # This is more accurate than searching content.json
+        cursor.execute("""
+            SELECT document_id, page_numbers
+            FROM document_codes
+            WHERE code_pattern = ? AND code_type = ?
+        """, [meta_category, code_type])
+
+        doc_pages_map = {}
+        for row in cursor.fetchall():
+            doc_id_db, page_numbers_str = row[0], row[1]
+            if page_numbers_str:
+                pages = set()
+                for p in page_numbers_str.split(','):
+                    try:
+                        pages.add(int(p.strip()))
+                    except ValueError:
+                        pass
+                doc_pages_map[doc_id_db] = pages
+
+        # Collect unique documents
         # Row format: (document_id, file_hash, filename, code_pattern, doc_type)
         docs_data: Dict[str, Dict] = {}
         for document_id, file_hash, filename, matched_pattern, doc_type in rows:
@@ -243,23 +282,20 @@ def build_sources_context(
                     'file_hash': file_hash,
                     'filename': filename,
                     'document_id': document_id,
-                    'doc_type': doc_type,  # 'codebook', 'clinical_guideline', 'policy', or None
-                    'matched_patterns': set()
+                    'doc_type': doc_type,
                 }
-            docs_data[file_hash]['matched_patterns'].add(matched_pattern)
 
-        # All patterns to search for in pages (original code + wildcards from DB)
-        all_patterns_to_match = {code} | set(wildcard_patterns)
-
-        # Load content and find pages with the code
+        # Load content and extract pages
         source_documents = []
         formatted_parts = []
         total_pages = 0
 
+        # Default expand_pages to 1 if not specified (±1 page context)
+        if expand_pages == 0:
+            expand_pages = 1
+
         for file_hash, data in docs_data.items():
             filename = data['filename']
-            matched_patterns = data['matched_patterns']
-            doc_type = data.get('doc_type')
 
             # Load content.json
             content_path = os.path.join(DOCUMENTS_DIR, file_hash, 'content.json')
@@ -269,40 +305,27 @@ def build_sources_context(
             with open(content_path, 'r', encoding='utf-8') as f:
                 doc_content = json.load(f)
 
-            # For CODEBOOKS: use entire document (all pages)
-            # For GUIDELINES and others: use only pages where code appears
-            if doc_type == 'codebook':
-                # Use ALL pages from the codebook
-                pages_with_code = {p['page'] for p in doc_content.get('pages', []) if p.get('content')}
-            else:
-                # Find pages where this code or matching wildcards appear
-                pages_with_code = set()
+            # Get pages from document_codes (all document types use same logic now)
+            pages_with_code = doc_pages_map.get(file_hash, set())
+
+            # Fallback: if no pages in DB, search in content.json
+            if not pages_with_code:
                 for page_data in doc_content.get('pages', []):
-                    page_codes = page_data.get('codes', [])
-                    for code_info in page_codes:
+                    for code_info in page_data.get('codes', []):
                         page_code = code_info.get('code', '').upper()
-                        # Check exact match
-                        if page_code == code.upper():
-                            pages_with_code.add(page_data['page'])
-                            break
-                        # Check if page code is a wildcard that matches our code
-                        if page_code in matched_patterns:
+                        page_code_type = code_info.get('type', '').upper()
+                        if page_code == meta_category and page_code_type == code_type:
                             pages_with_code.add(page_data['page'])
                             break
 
-                # If no specific pages found, check summary
-                if not pages_with_code:
-                    # Fallback: include all pages (document matched but no page-level info)
-                    pages_with_code = {p['page'] for p in doc_content.get('pages', []) if p.get('content')}
-
-                # Expand pages if requested (only for non-codebook docs)
-                if expand_pages > 0:
-                    expanded = set()
-                    for page in pages_with_code:
-                        for p in range(page - expand_pages, page + expand_pages + 1):
-                            if p > 0:
-                                expanded.add(p)
-                    pages_with_code = expanded
+            # Expand pages ±N for context
+            if expand_pages > 0 and pages_with_code:
+                expanded = set()
+                for page in pages_with_code:
+                    for p in range(page - expand_pages, page + expand_pages + 1):
+                        if p > 0:
+                            expanded.add(p)
+                pages_with_code = expanded
 
             # Generate doc_id from file_hash
             doc_id = get_doc_id(file_hash)
@@ -442,11 +465,11 @@ def merge_sources_contexts(*contexts: SourcesContext) -> SourcesContext:
 def get_available_documents_for_code(code: str, db_connection=None) -> List[Dict]:
     """
     Получает список всех документов, содержащих данный код.
-    Включает документы из wildcard паттернов.
+    Ищет по meta_category из code_hierarchy.
     FILTER: Excludes policy documents
 
     Returns:
-        List of {"document_id": str, "filename": str, "doc_id": str, "file_hash": str, "doc_type": str, "via_wildcard": str|None}
+        List of {"document_id": str, "filename": str, "doc_id": str, "file_hash": str, "doc_type": str, "via_meta_category": str|None}
     """
     from src.db.connection import get_db_connection
 
@@ -454,12 +477,15 @@ def get_available_documents_for_code(code: str, db_connection=None) -> List[Dict
     cursor = conn.cursor()
 
     try:
-        # Get wildcard patterns for this code
-        wildcard_patterns = get_wildcard_patterns_for_code(code)
-        pattern_placeholders = ','.join('?' * len(wildcard_patterns)) if wildcard_patterns else "''"
+        # Get meta_category and code_type for this code
+        meta_category = get_meta_category_for_code(code, conn)
+        code_type = get_code_type_for_code(code)
 
-        # Exclude policy documents, include wildcard matches
-        cursor.execute(f"""
+        if not meta_category:
+            return []
+
+        # Find documents by meta_category AND code_type
+        cursor.execute("""
             SELECT DISTINCT
                 dc.document_id,
                 d.filename,
@@ -468,9 +494,10 @@ def get_available_documents_for_code(code: str, db_connection=None) -> List[Dict
                 d.doc_type
             FROM document_codes dc
             JOIN documents d ON dc.document_id = d.file_hash
-            WHERE (dc.code_pattern = ? OR dc.code_pattern IN ({pattern_placeholders}))
+            WHERE dc.code_pattern = ?
+              AND dc.code_type = ?
               AND (d.doc_type IS NULL OR d.doc_type != 'policy')
-        """, [code] + wildcard_patterns)
+        """, [meta_category, code_type])
 
         rows = cursor.fetchall()
 
@@ -482,8 +509,6 @@ def get_available_documents_for_code(code: str, db_connection=None) -> List[Dict
                 continue
             seen_hashes.add(file_hash)
 
-            is_wildcard = matched_pattern.upper() != code.upper() and '%' in matched_pattern
-
             # Load content.json to get pages with this code
             content_path = os.path.join(DOCUMENTS_DIR, file_hash, 'content.json')
             pages = []
@@ -492,10 +517,12 @@ def get_available_documents_for_code(code: str, db_connection=None) -> List[Dict
                 with open(content_path, 'r', encoding='utf-8') as f:
                     doc_content = json.load(f)
 
+                # Find pages where code appears (exact match or starts with meta_category)
+                code_upper = code.upper()
                 for page_data in doc_content.get('pages', []):
                     for code_info in page_data.get('codes', []):
                         page_code = code_info.get('code', '').upper()
-                        if page_code == code.upper() or page_code == matched_pattern.upper():
+                        if page_code == code_upper or page_code.startswith(meta_category):
                             pages.append(page_data['page'])
                             break
 
@@ -506,7 +533,7 @@ def get_available_documents_for_code(code: str, db_connection=None) -> List[Dict
                 'file_hash': file_hash,
                 'doc_type': doc_type,  # 'codebook', 'clinical_guideline', or None
                 'pages': sorted(pages) if doc_type != 'codebook' else [],  # Empty for codebooks (whole doc used)
-                'via_wildcard': matched_pattern if is_wildcard else None
+                'via_meta_category': meta_category
             })
 
         return result

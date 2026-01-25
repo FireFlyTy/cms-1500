@@ -21,7 +21,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 
-from .core_ai import stream_gemini_generator
+from .core_ai import stream_gemini_generator, stream_openai_model
 from .prompts import (
     PROMPT_CMS_RULE_TRANSFORM,
     PROMPT_CMS_RULE_TO_JSON,
@@ -110,14 +110,28 @@ class CMSRuleGenerator:
             yield f"data: {event}\\n\\n"
     """
 
-    def __init__(self, thinking_budget: int = 8000):
+    # Default model - can be overridden via env var or constructor
+    DEFAULT_MODEL = os.getenv("RULE_GENERATOR_MODEL", "gemini")
+
+    def __init__(self, thinking_budget: int = 8000, model: str = None):
         self.thinking_budget = thinking_budget
+        self.model = model or self.DEFAULT_MODEL
         self._results: Dict[str, CMSStepResult] = {}
+
+    async def _stream_model(self, prompt: str, budget: int = None) -> AsyncGenerator[str, None]:
+        """Stream from configured model (Gemini or OpenAI)."""
+        if self.model.startswith("gpt"):
+            async for chunk in stream_openai_model(prompt, model=self.model):
+                yield chunk
+        else:
+            async for chunk in stream_gemini_generator(prompt, budget or self.thinking_budget):
+                yield chunk
 
     async def stream_pipeline(
         self,
         code: str,
         code_type: Optional[str] = None,
+        parent_cms1500_rule: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Stream full CMS rules generation pipeline.
@@ -125,6 +139,7 @@ class CMSRuleGenerator:
         Args:
             code: ICD-10, CPT, or HCPCS code
             code_type: Optional - will auto-detect if not provided
+            parent_cms1500_rule: Optional - parent's CMS-1500 rule for inheritance
 
         Yields:
             JSON SSE events
@@ -191,7 +206,8 @@ class CMSRuleGenerator:
                 code, code_type, description,
                 guideline_rule or "No guideline rule available.",
                 ncci_text,
-                cms_schema
+                cms_schema,
+                parent_cms1500_rule or "**No parent CMS-1500 rule** - This is a top-level code."
             ):
                 yield event
 
@@ -237,7 +253,8 @@ class CMSRuleGenerator:
         description: str,
         guideline_rule: str,
         ncci_text: str,
-        cms_schema: str
+        cms_schema: str,
+        parent_cms1500_rule: str = ""
     ) -> AsyncGenerator[str, None]:
         """Transform guideline + NCCI into CMS rules markdown."""
         step = "transform"
@@ -247,6 +264,7 @@ class CMSRuleGenerator:
             code=code,
             code_type=code_type,
             description=description,
+            parent_cms1500_rule=parent_cms1500_rule,
             guideline_rule=guideline_rule,
             ncci_edits=ncci_text,
             cms1500_schema=cms_schema
@@ -344,7 +362,7 @@ class CMSRuleGenerator:
 
         # Use class default if not specified, None means no thinking
         budget = self.thinking_budget if thinking_budget is self._USE_DEFAULT else thinking_budget
-        async for chunk in stream_gemini_generator(prompt, budget):
+        async for chunk in self._stream_model(prompt, budget):
             data = json.loads(chunk.strip())
 
             if data["type"] == "thought":
