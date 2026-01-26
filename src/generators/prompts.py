@@ -1108,6 +1108,24 @@ Include a rule if there is ANY possibility to check it from CMS-1500 fields:
 ⚠️ WRONG: "Cannot validate because requires clinical judgment" (for code-based checks)
 ✓ RIGHT: Include as warning/info if ANY claim field can be checked
 
+**MANDATORY RULE TYPES CHECKLIST** — For EACH type below, ask: "Does the guideline mention this? Can I create a rule?"
+
+| Type | Question to Ask | Example Rule |
+|------|-----------------|--------------|
+| Uniqueness | Can this code appear multiple times? | "E00.2 only once per claim" |
+| Sequencing | Is there a required primary diagnosis order? | "O-code must be primary when present" |
+| Specificity | Should a more specific code be used instead? | "Don't report E00.2 with other E00.x codes" |
+| Mutual Exclusion | Are there conflicting codes that can't coexist? | "E00.2 conflicts with E11.x" |
+| Expected Codes | Should other codes typically accompany this one? | "E11.x expects Z79.4 for insulin" |
+| Laterality | Does this code have laterality requirements? | "No laterality for E00.2" |
+| Age Check | Is there an age restriction? | "Code X only for patients under 18" |
+| Gender Check | Is there a gender restriction? | "O-codes only for female patients" |
+| Code-First | Is there a "code first" instruction? | "Code underlying condition first" |
+
+⚠️ You MUST consider EACH type above and either:
+1. Create a rule for it, OR
+2. Explicitly note why it doesn't apply (in your thinking)
+
 Mark each new rule as [NEW from guideline].
 
 **STEP 2: Classification**
