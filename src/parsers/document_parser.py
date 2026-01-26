@@ -160,8 +160,9 @@ class DocumentData:
                 skipped_pages.append(page.page)
 
             # Aggregate codes with pages and anchors
+            # Key includes both type and code to keep ICD-10 "A" separate from HCPCS "A"
             for code_info in page.codes:
-                key = code_info.code
+                key = f"{code_info.type}:{code_info.code}"
                 if key not in all_codes:
                     all_codes[key] = {
                         'code': code_info.code,

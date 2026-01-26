@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   Database, FileText, Settings, Search, ChevronDown, ChevronRight,
   CheckCircle, Clock, AlertCircle, X, Eye, Edit, Folder, File,
@@ -327,13 +327,17 @@ const TopicTag = ({ topic }) => (
 // DOCUMENT VIEWER
 // ============================================================
 
-const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClick }) => {
+const DocumentViewer = ({ docId, initialPage, highlightCode, codeToExpand, onClose, onCodeClick }) => {
   const [document, setDocument] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selectedPage, setSelectedPage] = useState(initialPage || 1);
   const [zoom, setZoom] = useState(100);
-  const [activeTab, setActiveTab] = useState('content');
-  const [expandedCode, setExpandedCode] = useState(null);
+  const [activeTab, setActiveTab] = useState(codeToExpand ? 'codes' : 'content');
+  // Store both code and type for expanded state (code+type makes unique key)
+  const [expandedCodeKey, setExpandedCodeKey] = useState(
+    codeToExpand ? `${codeToExpand.type}:${codeToExpand.code?.toString().toUpperCase()}` : null
+  );
+  const [expandedTypes, setExpandedTypes] = useState(codeToExpand?.type ? { [codeToExpand.type]: true } : {});
   const [expandedTopic, setExpandedTopic] = useState(null);
   const [expandedMed, setExpandedMed] = useState(null);
   const [showPageCodes, setShowPageCodes] = useState(false);
@@ -341,6 +345,33 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
   const [showPageMeds, setShowPageMeds] = useState(false);
   const [codeSearch, setCodeSearch] = useState('');
   const [searchText, setSearchText] = useState('');  // For PDF text highlighting
+  const [metaCategories, setMetaCategories] = useState(null);
+  const highlightedPageRef = useRef(null);
+
+  // Load meta_categories
+  useEffect(() => {
+    fetch(`${API_BASE}/meta-categories`)
+      .then(res => res.json())
+      .then(setMetaCategories)
+      .catch(() => {});
+  }, []);
+
+  // Auto-scroll to highlighted page when it becomes visible
+  useEffect(() => {
+    // Wait for React to render the expanded category with page buttons
+    const scrollToHighlighted = () => {
+      if (highlightedPageRef.current) {
+        highlightedPageRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    };
+    // Try multiple times with increasing delays to catch the render
+    const timers = [
+      setTimeout(scrollToHighlighted, 100),
+      setTimeout(scrollToHighlighted, 300),
+      setTimeout(scrollToHighlighted, 500)
+    ];
+    return () => timers.forEach(t => clearTimeout(t));
+  }, [expandedCodeKey, selectedPage]);
 
   useEffect(() => {
     fetch(`${API_BASE}/documents/${docId}`)
@@ -366,6 +397,78 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
     }
   }, [highlightCode]);
 
+  // Expand code and switch to Codes tab when codeToExpand is provided
+  useEffect(() => {
+    if (codeToExpand && document) {
+      setActiveTab('codes');
+
+      const targetCode = codeToExpand.code?.toString().toUpperCase();
+      const targetType = codeToExpand.type;
+      const targetPage = selectedPage;
+
+      // Expand the type group
+      if (targetType) {
+        setExpandedTypes(prev => ({ ...prev, [targetType]: true }));
+      }
+
+      // Trust the passed codeToExpand - set expandedCodeKey directly
+      // This avoids issues with summary.all_codes having merged codes
+      if (targetCode && targetType) {
+        setExpandedCodeKey(`${targetType}:${targetCode}`);
+      }
+    }
+  }, [codeToExpand, document, selectedPage]);
+
+  // Build allCodes from pages to ensure type:code uniqueness
+  // This fixes the issue where summary.all_codes may have merged ICD-10 "A" with HCPCS "A"
+  // Only include codes that exist in meta_categories dictionary
+  // Must be called before early returns to maintain hook order
+  const allCodes = useMemo(() => {
+    if (!document?.pages) return [];
+    const codesMap = {};
+    for (const page of document.pages) {
+      for (const code of page.codes || []) {
+        // Filter: only include codes that exist in meta_categories dictionary
+        if (metaCategories) {
+          const typeCategories = metaCategories[code.type]?.categories || {};
+          if (!typeCategories[code.code]) continue; // Skip codes not in dictionary
+        }
+
+        const key = `${code.type}:${code.code}`;
+        if (!codesMap[key]) {
+          codesMap[key] = {
+            code: code.code,
+            type: code.type,
+            pages: [],
+            contexts: [],
+            anchors: []
+          };
+        }
+        if (!codesMap[key].pages.includes(page.page)) {
+          codesMap[key].pages.push(page.page);
+        }
+        if (code.context || code.reason) {
+          codesMap[key].contexts.push(code.context || code.reason);
+        }
+        // Always add anchor info for this page (even if no anchor text)
+        // Note: JSON uses "start"/"end" not "anchor_start"/"anchor_end"
+        const anchorInfo = { page: page.page, reason: code.reason || code.context };
+        if (code.start && code.end) {
+          anchorInfo.start = code.start;
+          anchorInfo.end = code.end;
+        } else if (code.anchor_start && code.anchor_end) {
+          // Fallback for old format
+          anchorInfo.start = code.anchor_start;
+          anchorInfo.end = code.anchor_end;
+        } else if (code.anchor) {
+          anchorInfo.text = code.anchor;
+        }
+        codesMap[key].anchors.push(anchorInfo);
+      }
+    }
+    return Object.values(codesMap);
+  }, [document, metaCategories]);
+
   if (loading) {
     return (
       <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
@@ -389,7 +492,6 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
   }
 
   const currentPage = document.pages?.find(p => p.page === selectedPage);
-  const allCodes = document.summary?.all_codes || [];
   const allTopics = document.summary?.topics || [];
   const allMedications = document.summary?.medications || [];
 
@@ -657,7 +759,11 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                                       className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded font-mono cursor-pointer hover:bg-gray-200"
                                       onClick={() => {
                                         setActiveTab('codes');
-                                        setExpandedCode(c.code);
+                                        const key = `${c.type}:${c.code?.toString().toUpperCase()}`;
+                                        setExpandedCodeKey(key);
+                                        if (c.type) {
+                                          setExpandedTypes(prev => ({ ...prev, [c.type]: true }));
+                                        }
                                       }}
                                     >
                                       {c.code}
@@ -770,7 +876,7 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                       <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                       <input
                         type="text"
-                        placeholder="Search codes, citations..."
+                        placeholder="Search categories..."
                         value={codeSearch}
                         onChange={(e) => setCodeSearch(e.target.value)}
                         className="w-full pl-9 pr-3 py-2 border rounded-lg text-sm"
@@ -778,119 +884,194 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
                     </div>
                   </div>
 
-                  <div className="flex-1 overflow-auto p-2">
-                    {filteredCodes.length === 0 ? (
-                      <p className="text-center text-gray-400 py-8">No codes found</p>
-                    ) : (
-                      <div className="space-y-1">
-                        {filteredCodes.map((codeInfo, i) => (
-                          <div key={i} className="border rounded">
-                            <button
-                              onClick={() => setExpandedCode(expandedCode === codeInfo.code ? null : codeInfo.code)}
-                              className="w-full px-3 py-2 flex items-center justify-between hover:bg-gray-50 text-left"
-                            >
-                              <div className="flex items-center gap-2">
-                                <span className="font-mono text-sm font-medium">{codeInfo.code}</span>
-                                <span className="text-xs px-1.5 py-0.5 bg-gray-100 rounded text-gray-500">{codeInfo.type}</span>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs text-gray-400">{codeInfo.pages?.length || 0} pages</span>
-                                <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${expandedCode === codeInfo.code ? 'rotate-180' : ''}`} />
-                              </div>
-                            </button>
-                            {/* Inline page buttons with anchor support */}
-                            {codeInfo.pages?.length > 0 && (
-                              <div className="px-3 py-1.5 border-t bg-gray-50/50 flex flex-wrap gap-1">
-                                {codeInfo.pages?.slice(0, expandedCode === codeInfo.code ? undefined : 10).map(pageNum => {
-                                  // Find anchor for this page
-                                  const anchor = codeInfo.anchors?.find(a => a.page === pageNum);
-                                  // Support both old format (text) and new format (start/end)
-                                  const anchorText = anchor?.text || anchor?.start;
-                                  const hasAnchor = !!anchorText;
-                                  // Build search text: use range format if we have start+end
-                                  const searchValue = anchor?.start && anchor?.end
-                                    ? `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`
-                                    : anchorText;
-                                  return (
-                                    <button
-                                      key={pageNum}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setSelectedPage(pageNum);
-                                        // Set anchor text for highlighting in PDF
-                                        if (searchValue) {
-                                          setSearchText(searchValue);
-                                        } else {
-                                          // Fallback: use context or code itself
-                                          setSearchText(codeInfo.contexts?.[0] || codeInfo.code);
-                                        }
-                                      }}
-                                      title={hasAnchor ? `📍 "${anchorText}"` : 'Click to view page (no citation anchor)'}
-                                      className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                                        selectedPage === pageNum
-                                          ? 'bg-blue-600 text-white'
-                                          : hasAnchor
-                                            ? 'bg-yellow-50 border border-yellow-300 hover:bg-yellow-100'
-                                            : 'bg-white border hover:bg-blue-50 hover:border-blue-300'
-                                      }`}
-                                    >
-                                      p.{pageNum}
-                                      {hasAnchor && <span className="ml-1 text-yellow-600">•</span>}
-                                    </button>
-                                  );
-                                })}
-                                {!expandedCode !== codeInfo.code && codeInfo.pages?.length > 10 && (
-                                  <span className="text-xs text-gray-400 px-1">+{codeInfo.pages.length - 10}</span>
-                                )}
-                              </div>
-                            )}
-                            {/* Expanded: show anchors/citations */}
-                            {expandedCode === codeInfo.code && (
-                              <div className="px-3 py-2 bg-gray-50 border-t space-y-2">
-                                {codeInfo.contexts?.[0] && (
-                                  <p className="text-xs text-gray-500 italic">
-                                    {codeInfo.contexts[0]}
-                                  </p>
-                                )}
-                                {codeInfo.anchors?.length > 0 && (
-                                  <div className="space-y-1">
-                                    <p className="text-xs font-medium text-gray-600">Citations:</p>
-                                    {codeInfo.anchors.map((anchor, idx) => {
-                                      // Support both old format (text) and new format (start/end)
-                                      const anchorText = anchor.text || anchor.start;
-                                      const displayText = anchor.text
-                                        ? `"${anchor.text}"`
-                                        : anchor.start && anchor.end
-                                          ? `"${anchor.start}" ... "${anchor.end}"`
-                                          : anchor.start
-                                            ? `"${anchor.start}"`
-                                            : '';
-                                      // Build search text: use range format if we have start+end
-                                      const searchValue = anchor.start && anchor.end
-                                        ? `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`
-                                        : anchorText;
+                  <div className="flex-1 overflow-auto">
+                    {(() => {
+                      // Helper to get category info
+                      const getCategoryInfo = (codeType, codePattern) => {
+                        if (!metaCategories || !metaCategories[codeType]) {
+                          return { name: codePattern, range: '', exists: false };
+                        }
+                        const categories = metaCategories[codeType]?.categories || {};
+                        const info = categories[codePattern];
+                        return info
+                          ? { name: info.name, range: info.range, exists: true }
+                          : { name: codePattern, range: '', exists: false };
+                      };
+
+                      // Group codes by type, filtering out codes not in dictionary
+                      const codesByType = filteredCodes.reduce((acc, c) => {
+                        const type = c.type || 'Other';
+                        // Only include codes that exist in meta_categories dictionary
+                        const info = getCategoryInfo(type, c.code);
+                        if (!info.exists) return acc;
+
+                        if (!acc[type]) acc[type] = [];
+                        acc[type].push(c);
+                        return acc;
+                      }, {});
+
+                      // Filter by search
+                      const searchFiltered = Object.entries(codesByType).reduce((acc, [type, codes]) => {
+                        if (!codeSearch) {
+                          acc[type] = codes;
+                          return acc;
+                        }
+                        const query = codeSearch.toLowerCase();
+                        const filtered = codes.filter(c => {
+                          const info = getCategoryInfo(type, c.code);
+                          return c.code.toLowerCase().includes(query) || info.name.toLowerCase().includes(query);
+                        });
+                        if (filtered.length > 0) acc[type] = filtered;
+                        return acc;
+                      }, {});
+
+                      // Sort types
+                      const typeOrder = ['ICD-10', 'CPT', 'HCPCS'];
+                      const sortedTypes = Object.keys(searchFiltered).sort((a, b) => {
+                        const aIdx = typeOrder.indexOf(a);
+                        const bIdx = typeOrder.indexOf(b);
+                        if (aIdx === -1 && bIdx === -1) return a.localeCompare(b);
+                        if (aIdx === -1) return 1;
+                        if (bIdx === -1) return -1;
+                        return aIdx - bIdx;
+                      });
+
+                      if (sortedTypes.length === 0) {
+                        return <p className="text-center text-gray-400 py-8">No codes found</p>;
+                      }
+
+                      return (
+                        <div className="divide-y">
+                          {sortedTypes.map(type => {
+                            const typeCodes = searchFiltered[type] || [];
+                            const isTypeExpanded = expandedTypes[type] !== false; // Default expanded
+                            const sortedCodes = [...typeCodes].sort((a, b) => a.code.localeCompare(b.code));
+
+                            return (
+                              <div key={type}>
+                                {/* Type header */}
+                                <button
+                                  onClick={() => setExpandedTypes(prev => ({ ...prev, [type]: !isTypeExpanded }))}
+                                  className="w-full px-3 py-2 flex items-center justify-between hover:bg-gray-50 transition-colors bg-slate-50"
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <ChevronRight className={`w-4 h-4 text-gray-400 transition-transform ${isTypeExpanded ? 'rotate-90' : ''}`} />
+                                    <span className="font-semibold text-gray-800 text-sm">{type}</span>
+                                    <span className="text-xs text-gray-500">({typeCodes.length})</span>
+                                  </div>
+                                </button>
+
+                                {/* Type content - categories */}
+                                {isTypeExpanded && (
+                                  <div className="bg-white">
+                                    {sortedCodes.map(codeInfo => {
+                                      const info = getCategoryInfo(type, codeInfo.code);
+                                      // Compare using type:code key for uniqueness
+                                      const codeKey = `${type}:${codeInfo.code?.toString().toUpperCase()}`;
+                                      const isCodeExpanded = expandedCodeKey === codeKey;
+                                      const pageCount = codeInfo.pages?.length || 0;
+
+                                      // Collect reasons
+                                      const reasons = [...new Set([
+                                        ...(codeInfo.contexts || []),
+                                        ...(codeInfo.anchors?.map(a => a.reason).filter(Boolean) || [])
+                                      ])].filter(r => r);
+
                                       return (
-                                        <button
-                                          key={idx}
-                                          onClick={() => {
-                                            setSelectedPage(anchor.page);
-                                            setSearchText(searchValue);
-                                          }}
-                                          className="block w-full text-left text-xs px-2 py-1 rounded bg-yellow-50 border border-yellow-200 hover:bg-yellow-100 transition-colors"
-                                        >
-                                          <span className="text-gray-400">p.{anchor.page}:</span>{' '}
-                                          <span className="text-gray-700">{displayText}</span>
-                                        </button>
+                                        <div key={codeInfo.code} className="border-b border-gray-100 last:border-b-0">
+                                          {/* Category row */}
+                                          <button
+                                            onClick={() => setExpandedCodeKey(isCodeExpanded ? null : codeKey)}
+                                            className="w-full px-4 py-2 flex items-center justify-between hover:bg-gray-50 transition-colors text-left"
+                                          >
+                                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                                              <ChevronRight className={`w-3 h-3 text-gray-400 transition-transform flex-shrink-0 ${isCodeExpanded ? 'rotate-90' : ''}`} />
+                                              <span className="text-sm text-gray-700 truncate">
+                                                {info.name}
+                                                {info.range && <span className="text-gray-400 ml-1">({info.range})</span>}
+                                              </span>
+                                              {reasons.length > 0 && (
+                                                <div className="relative group flex-shrink-0">
+                                                  <svg className="w-4 h-4 text-gray-400 hover:text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <circle cx="12" cy="12" r="10" strokeWidth="2"/>
+                                                    <path strokeWidth="2" d="M12 16v-4M12 8h.01"/>
+                                                  </svg>
+                                                  <div className="hidden group-hover:block absolute left-6 top-0 z-50 w-64 p-2 bg-gray-900 text-white text-xs rounded shadow-lg">
+                                                    {reasons.slice(0, 3).map((r, i) => (
+                                                      <div key={i} className="text-gray-300">• {r}</div>
+                                                    ))}
+                                                  </div>
+                                                </div>
+                                              )}
+                                            </div>
+                                            <span className="text-xs text-gray-400 flex-shrink-0 ml-2">
+                                              {pageCount} page{pageCount !== 1 ? 's' : ''}
+                                            </span>
+                                          </button>
+
+                                          {/* Expanded: pages list */}
+                                          {isCodeExpanded && codeInfo.pages?.length > 0 && (
+                                            <div className="px-4 pb-2 space-y-1">
+                                              {codeInfo.pages.map((pageNum, idx) => {
+                                                const anchor = codeInfo.anchors?.find(a => a.page === pageNum);
+                                                const hasAnchor = !!(anchor?.text || anchor?.start);
+                                                const searchValue = anchor?.start && anchor?.end
+                                                  ? `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`
+                                                  : anchor?.text || anchor?.start;
+                                                const displayText = anchor?.text
+                                                  ? `"${anchor.text}"`
+                                                  : anchor?.start && anchor?.end
+                                                    ? `"${anchor.start}" ... "${anchor.end}"`
+                                                    : null;
+
+                                                const isCurrentPage = pageNum === selectedPage;
+
+                                                return (
+                                                  <button
+                                                    key={idx}
+                                                    ref={isCurrentPage ? highlightedPageRef : null}
+                                                    onClick={() => {
+                                                      setSelectedPage(pageNum);
+                                                      if (searchValue) setSearchText(searchValue);
+                                                    }}
+                                                    className={`w-full text-left px-2 py-1.5 rounded transition-colors group/page ${
+                                                      isCurrentPage
+                                                        ? 'bg-blue-100 border border-blue-300'
+                                                        : 'hover:bg-blue-50'
+                                                    }`}
+                                                  >
+                                                    <div className="flex items-center gap-2">
+                                                      <span className={`text-xs font-medium group-hover/page:underline ${
+                                                        isCurrentPage ? 'text-blue-700' : 'text-blue-600'
+                                                      }`}>
+                                                        Page {pageNum}
+                                                      </span>
+                                                      {hasAnchor && <span className="text-yellow-500 text-xs">•</span>}
+                                                      <ChevronRight className={`w-3 h-3 ml-auto ${
+                                                        isCurrentPage ? 'text-blue-500' : 'text-gray-300 group-hover/page:text-blue-400'
+                                                      }`} />
+                                                    </div>
+                                                    {displayText && (
+                                                      <p className="text-xs text-gray-500 truncate mt-0.5 italic">
+                                                        {displayText}
+                                                      </p>
+                                                    )}
+                                                  </button>
+                                                );
+                                              })}
+                                            </div>
+                                          )}
+                                        </div>
                                       );
                                     })}
                                   </div>
                                 )}
                               </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               )}
@@ -1120,208 +1301,376 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, onClose, onCodeClic
 // CODE INDEX
 // ============================================================
 
-const CodeIndexView = ({ onDocumentClick, onClose }) => {
-  const { codes, loading } = useCodes();
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterType, setFilterType] = useState('all');
-  const [selectedCode, setSelectedCode] = useState(null);
-  const [codeDetails, setCodeDetails] = useState(null);
+// Hook to load meta_categories
+function useMetaCategories() {
+  const [metaCategories, setMetaCategories] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (selectedCode) {
-      fetch(`${API_BASE}/codes/${encodeURIComponent(selectedCode)}`)
-        .then(res => res.json())
-        .then(setCodeDetails)
-        .catch(() => setCodeDetails(null));
-    }
-  }, [selectedCode]);
+    fetch(`${API_BASE}/meta-categories`)
+      .then(res => res.json())
+      .then(data => {
+        setMetaCategories(data);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
 
-  const filteredCodes = codes.filter(c => {
-    // Null checks
-    if (!c || !c.code) return false;
+  return { metaCategories, loading };
+}
 
-    if (filterType !== 'all' && c.type !== filterType) return false;
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      const code = (c.code || '').toLowerCase();
-      if (!code.includes(query)) return false;
+// Info icon with tooltip
+const InfoTooltip = ({ reasons }) => {
+  const [showTooltip, setShowTooltip] = useState(false);
+
+  if (!reasons || reasons.length === 0) return null;
+
+  // Merge and dedupe reasons
+  const uniqueReasons = [...new Set(reasons)].filter(r => r && r.trim());
+  if (uniqueReasons.length === 0) return null;
+
+  return (
+    <div className="relative inline-block">
+      <button
+        onMouseEnter={() => setShowTooltip(true)}
+        onMouseLeave={() => setShowTooltip(false)}
+        className="text-gray-400 hover:text-blue-500 transition-colors"
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="10" strokeWidth="2"/>
+          <path strokeWidth="2" d="M12 16v-4M12 8h.01"/>
+        </svg>
+      </button>
+      {showTooltip && (
+        <div className="absolute left-6 top-0 z-50 w-72 p-3 bg-gray-900 text-white text-xs rounded-lg shadow-lg">
+          <div className="font-medium mb-1">Why this category was found:</div>
+          <ul className="space-y-1">
+            {uniqueReasons.map((reason, i) => (
+              <li key={i} className="text-gray-300">• {reason}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const CodeIndexView = ({ onDocumentClick, onClose }) => {
+  const { codes, loading: codesLoading } = useCodes();
+  const { metaCategories, loading: metaLoading } = useMetaCategories();
+  const [expandedTypes, setExpandedTypes] = useState({});
+  const [expandedCodes, setExpandedCodes] = useState({});
+  const [codeDetails, setCodeDetails] = useState({});
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const loading = codesLoading || metaLoading;
+
+  // Get category info from meta_categories
+  const getCategoryInfo = (codeType, codePattern) => {
+    if (!metaCategories || !metaCategories[codeType]) {
+      return { name: codePattern, range: '', exists: false };
     }
-    return true;
+
+    const categories = metaCategories[codeType].categories || {};
+    const info = categories[codePattern];
+
+    if (info) {
+      return { name: info.name, range: info.range, exists: true };
+    }
+
+    return { name: codePattern, range: '', exists: false };
+  };
+
+  // Group codes by type, filtering out codes not in dictionary
+  const codesByType = codes.reduce((acc, c) => {
+    if (!c || !c.code) return acc;
+    const type = c.type || 'Other';
+    // Only include codes that exist in meta_categories dictionary
+    const info = getCategoryInfo(type, c.code);
+    if (!info.exists) return acc;
+
+    if (!acc[type]) acc[type] = [];
+    acc[type].push(c);
+    return acc;
+  }, {});
+
+  // Filter codes by search
+  const filteredCodesByType = Object.entries(codesByType).reduce((acc, [type, typeCodes]) => {
+    if (!searchQuery) {
+      acc[type] = typeCodes;
+      return acc;
+    }
+
+    const query = searchQuery.toLowerCase();
+    const filtered = typeCodes.filter(c => {
+      const info = getCategoryInfo(type, c.code);
+      return c.code.toLowerCase().includes(query) ||
+             info.name.toLowerCase().includes(query);
+    });
+
+    if (filtered.length > 0) {
+      acc[type] = filtered;
+    }
+    return acc;
+  }, {});
+
+  // Sort types: ICD-10, CPT, HCPCS, then others
+  const typeOrder = ['ICD-10', 'CPT', 'HCPCS'];
+  const sortedTypes = Object.keys(filteredCodesByType).sort((a, b) => {
+    const aIdx = typeOrder.indexOf(a);
+    const bIdx = typeOrder.indexOf(b);
+    if (aIdx === -1 && bIdx === -1) return a.localeCompare(b);
+    if (aIdx === -1) return 1;
+    if (bIdx === -1) return -1;
+    return aIdx - bIdx;
   });
+
+  // Load code details when expanded - include type for filtering
+  const loadCodeDetails = async (code, codeType) => {
+    const key = `${codeType}:${code}`;
+    if (codeDetails[key]) return;
+
+    try {
+      // Pass code_type as query param to filter by type
+      const url = `${API_BASE}/codes/${encodeURIComponent(code)}?code_type=${encodeURIComponent(codeType)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      setCodeDetails(prev => ({ ...prev, [key]: data }));
+    } catch (e) {
+      console.error('Failed to load code details:', e);
+    }
+  };
+
+  const toggleType = (type) => {
+    setExpandedTypes(prev => ({ ...prev, [type]: !prev[type] }));
+  };
+
+  const toggleCode = (code, codeType) => {
+    const key = `${codeType}:${code}`;
+    const newExpanded = !expandedCodes[key];
+    setExpandedCodes(prev => ({ ...prev, [key]: newExpanded }));
+    if (newExpanded) {
+      loadCodeDetails(code, codeType);
+    }
+  };
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl w-full max-w-5xl h-[80vh] flex flex-col overflow-hidden shadow-2xl">
+      <div className="bg-white rounded-xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden shadow-2xl">
         {/* Header */}
         <div className="px-4 py-3 border-b flex items-center justify-between bg-slate-50">
           <div className="flex items-center gap-3">
             <Code className="w-5 h-5 text-blue-600" />
             <h2 className="font-semibold text-gray-900">Code Index</h2>
-            <span className="text-sm text-gray-500">{codes.length} codes</span>
+            <span className="text-sm text-gray-500">{codes.length} categories</span>
           </div>
           <button onClick={onClose} className="p-2 hover:bg-gray-200 rounded-lg">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Content */}
-        <div className="flex-1 flex overflow-hidden">
-          {/* Left: List */}
-          <div className="w-1/3 border-r flex flex-col">
-            <div className="p-3 border-b space-y-2">
-              <div className="relative">
-                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search codes..."
-                  className="w-full pl-9 pr-3 py-2 border rounded-lg text-sm"
-                />
-              </div>
-              <div className="flex gap-1">
-                {['all', 'ICD-10', 'HCPCS', 'CPT'].map(type => (
-                  <button
-                    key={type}
-                    onClick={() => setFilterType(type)}
-                    className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
-                      filterType === type ? 'bg-blue-600 text-white' : 'bg-gray-100 hover:bg-gray-200'
-                    }`}
-                  >
-                    {type === 'all' ? 'All' : type}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-auto">
-              {loading ? (
-                <div className="p-4 text-center">
-                  <Loader2 className="w-6 h-6 animate-spin mx-auto text-gray-400" />
-                </div>
-              ) : filteredCodes.length === 0 ? (
-                <div className="p-4 text-center text-gray-400 text-sm">No codes found</div>
-              ) : (
-                filteredCodes.map((code, idx) => (
-                  <button
-                    key={`${code.code}-${idx}`}
-                    onClick={() => setSelectedCode(code.code)}
-                    className={`w-full px-4 py-3 border-b text-left hover:bg-gray-50 transition-colors ${
-                      selectedCode === code.code ? 'bg-blue-50 border-l-4 border-l-blue-600' : ''
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono font-medium text-sm">{code.code}</span>
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                        code.type === 'ICD-10' ? 'bg-gray-100 text-gray-600' :
-                        code.type === 'HCPCS' ? 'bg-gray-100 text-gray-600' :
-                        'bg-gray-100 text-gray-600'
-                      }`}>
-                        {code.type}
-                      </span>
-                    </div>
-                    <div className="text-xs text-gray-500 mt-1">
-                      {code.documents?.[0]?.count || code.documents?.length || 0} document{(code.documents?.[0]?.count || code.documents?.length || 0) !== 1 ? 's' : ''}
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
+        {/* Search */}
+        <div className="px-4 py-3 border-b bg-white">
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search categories..."
+              className="w-full pl-9 pr-3 py-2 border rounded-lg text-sm"
+            />
           </div>
+        </div>
 
-          {/* Right: Details */}
-          <div className="flex-1 overflow-auto">
-            {codeDetails ? (
-              <div className="p-4">
-                <div className="mb-6">
-                  <div className="flex items-center gap-3 mb-2">
-                    <h3 className="text-2xl font-mono font-bold">{codeDetails.code}</h3>
-                    <span className={`px-2 py-1 rounded text-xs font-medium ${
-                      codeDetails.type === 'ICD-10' ? 'bg-gray-100 text-gray-600' :
-                      codeDetails.type === 'HCPCS' ? 'bg-gray-100 text-gray-600' :
-                      'bg-gray-100 text-gray-600'
-                    }`}>
-                      {codeDetails.type}
-                    </span>
-                  </div>
-                </div>
+        {/* Content */}
+        <div className="flex-1 overflow-auto">
+          {loading ? (
+            <div className="p-8 text-center">
+              <Loader2 className="w-8 h-8 animate-spin mx-auto text-gray-400" />
+              <p className="mt-2 text-gray-500 text-sm">Loading categories...</p>
+            </div>
+          ) : sortedTypes.length === 0 ? (
+            <div className="p-8 text-center text-gray-400">
+              <Hash className="w-12 h-12 mx-auto mb-2 opacity-50" />
+              <p>No categories found</p>
+            </div>
+          ) : (
+            <div className="divide-y">
+              {sortedTypes.map(type => {
+                const typeCodes = filteredCodesByType[type] || [];
+                const isTypeExpanded = expandedTypes[type];
 
-                <div className="space-y-4">
-                  {codeDetails.documents?.map(doc => (
-                    <div key={doc.id} className="border rounded-lg overflow-hidden">
-                      <div className="p-3 bg-slate-50 flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <DocTypeIcon docType={doc.doc_type} />
-                          <span className="font-medium text-sm">{doc.filename}</span>
-                        </div>
-                        <button
-                          onClick={() => onDocumentClick(doc.id)}
-                          className="text-xs text-blue-600 hover:underline flex items-center gap-1"
-                        >
-                          Open <ExternalLink className="w-3 h-3" />
-                        </button>
+                // Sort codes by letter/number
+                const sortedCodes = [...typeCodes].sort((a, b) => a.code.localeCompare(b.code));
+
+                return (
+                  <div key={type}>
+                    {/* Type header */}
+                    <button
+                      onClick={() => toggleType(type)}
+                      className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <ChevronRight className={`w-4 h-4 text-gray-400 transition-transform ${isTypeExpanded ? 'rotate-90' : ''}`} />
+                        <span className="font-semibold text-gray-900">{type}</span>
+                        <span className="text-sm text-gray-500">({typeCodes.length})</span>
                       </div>
-                      <div className="p-3 space-y-2">
-                        {doc.pages?.map((pageInfo, i) => {
-                          // Build highlight text from anchor (prefer start/end format, fallback to text or context)
-                          const anchor = pageInfo.anchor;
-                          let highlightText = null;
-                          if (anchor?.start && anchor?.end) {
-                            highlightText = `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`;
-                          } else if (anchor?.text) {
-                            highlightText = anchor.text;
-                          } else if (anchor?.start) {
-                            highlightText = anchor.start;
-                          } else if (pageInfo.context) {
-                            highlightText = pageInfo.context;
+                    </button>
+
+                    {/* Type content - categories list */}
+                    {isTypeExpanded && (
+                      <div className="bg-gray-50 border-t">
+                        {sortedCodes.map(code => {
+                          const codeKey = `${type}:${code.code}`;
+                          const info = getCategoryInfo(type, code.code);
+                          const isCodeExpanded = expandedCodes[codeKey];
+                          const details = codeDetails[codeKey];
+                          const docCount = code.documents?.[0]?.count || code.documents?.length || 0;
+
+                          // Collect all reasons from details
+                          const allReasons = [];
+                          if (details?.documents) {
+                            details.documents.forEach(doc => {
+                              doc.pages?.forEach(page => {
+                                if (page.reason) allReasons.push(page.reason);
+                                if (page.context) allReasons.push(page.context);
+                              });
+                            });
                           }
 
                           return (
-                            <button
-                              key={i}
-                              onClick={() => onDocumentClick(doc.id, pageInfo.page, highlightText)}
-                              className="w-full text-left hover:bg-blue-50 p-2 rounded-lg transition-colors group"
-                            >
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs font-medium text-blue-600 group-hover:underline">
-                                  Page {pageInfo.page}
+                            <div key={codeKey} className="border-b border-gray-200 last:border-b-0">
+                              {/* Category row */}
+                              <button
+                                onClick={() => toggleCode(code.code, type)}
+                                className="w-full px-6 py-2.5 flex items-center justify-between hover:bg-white transition-colors text-left"
+                              >
+                                <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  <ChevronRight className={`w-3 h-3 text-gray-400 transition-transform flex-shrink-0 ${isCodeExpanded ? 'rotate-90' : ''}`} />
+                                  <span className="text-sm text-gray-800 truncate">
+                                    {info.name}
+                                    {info.range && (
+                                      <span className="text-gray-500 ml-1">({info.range})</span>
+                                    )}
+                                  </span>
+                                  {isCodeExpanded && allReasons.length > 0 && (
+                                    <InfoTooltip reasons={allReasons} />
+                                  )}
+                                </div>
+                                <span className="text-xs text-gray-400 flex-shrink-0 ml-2">
+                                  {docCount} doc{docCount !== 1 ? 's' : ''}
                                 </span>
-                                {anchor && <span className="text-yellow-500 text-xs">•</span>}
-                                <ChevronRight className="w-3 h-3 text-gray-300 group-hover:text-blue-400" />
-                              </div>
-                              {anchor?.start && anchor?.end ? (
-                                <p className="text-xs italic text-gray-500 mt-1 truncate">
-                                  "{anchor.start}" ... "{anchor.end}"
-                                </p>
-                              ) : anchor?.text ? (
-                                <p className="text-xs italic text-gray-500 mt-1 truncate">
-                                  "{anchor.text}"
-                                </p>
-                              ) : pageInfo.context ? (
-                                <p className="text-xs italic text-gray-500 mt-1 truncate">
-                                  "{pageInfo.context}"
-                                </p>
-                              ) : null}
-                              {pageInfo.content_preview && (
-                                <p className="text-xs text-gray-400 mt-1 truncate">{pageInfo.content_preview}</p>
+                              </button>
+
+                              {/* Expanded details */}
+                              {isCodeExpanded && (
+                                <div className="px-6 pb-3 bg-white">
+                                  {!details ? (
+                                    <div className="py-2 text-center">
+                                      <Loader2 className="w-4 h-4 animate-spin mx-auto text-gray-400" />
+                                    </div>
+                                  ) : details.documents?.length === 0 ? (
+                                    <p className="text-xs text-gray-400 py-2">No documents found</p>
+                                  ) : (
+                                    <div className="space-y-3">
+                                      {details.documents?.map(doc => {
+                                        // Group pages by page number and merge reasons
+                                        const pageGroups = {};
+                                        doc.pages?.forEach(p => {
+                                          if (!pageGroups[p.page]) {
+                                            pageGroups[p.page] = {
+                                              page: p.page,
+                                              anchors: [],
+                                              reasons: []
+                                            };
+                                          }
+                                          if (p.anchor) pageGroups[p.page].anchors.push(p.anchor);
+                                          if (p.reason) pageGroups[p.page].reasons.push(p.reason);
+                                          if (p.context) pageGroups[p.page].reasons.push(p.context);
+                                        });
+
+                                        const pages = Object.values(pageGroups).sort((a, b) => a.page - b.page);
+
+                                        return (
+                                          <div key={doc.id} className="border rounded-lg overflow-hidden">
+                                            <div className="px-3 py-2 bg-slate-50 flex items-center justify-between">
+                                              <div className="flex items-center gap-2 min-w-0">
+                                                <DocTypeIcon docType={doc.doc_type} className="w-4 h-4 flex-shrink-0" />
+                                                <span className="text-sm font-medium truncate">{doc.filename}</span>
+                                              </div>
+                                              <button
+                                                onClick={() => onDocumentClick(doc.id)}
+                                                className="text-xs text-blue-600 hover:underline flex items-center gap-1 flex-shrink-0"
+                                              >
+                                                Open <ExternalLink className="w-3 h-3" />
+                                              </button>
+                                            </div>
+                                            <div className="p-2 space-y-1">
+                                              {pages.map((pageInfo, i) => {
+                                                const anchor = pageInfo.anchors[0];
+                                                let highlightText = null;
+                                                if (anchor?.start && anchor?.end) {
+                                                  highlightText = `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`;
+                                                } else if (anchor?.text) {
+                                                  highlightText = anchor.text;
+                                                } else if (anchor?.start) {
+                                                  highlightText = anchor.start;
+                                                }
+
+                                                // Get unique reasons for this page
+                                                const pageReasons = [...new Set(pageInfo.reasons)].filter(r => r);
+
+                                                return (
+                                                  <button
+                                                    key={i}
+                                                    onClick={() => onDocumentClick(doc.id, pageInfo.page, highlightText, { code: code.code, type })}
+                                                    className="w-full text-left hover:bg-blue-50 px-2 py-1.5 rounded transition-colors group"
+                                                  >
+                                                    <div className="flex items-center gap-2">
+                                                      <span className="text-xs font-medium text-blue-600 group-hover:underline">
+                                                        Page {pageInfo.page}
+                                                      </span>
+                                                      {pageInfo.anchors.length > 1 && (
+                                                        <span className="text-xs text-gray-400">
+                                                          ({pageInfo.anchors.length} citations)
+                                                        </span>
+                                                      )}
+                                                      {pageReasons.length > 0 && (
+                                                        <InfoTooltip reasons={pageReasons} />
+                                                      )}
+                                                      <ChevronRight className="w-3 h-3 text-gray-300 group-hover:text-blue-400 ml-auto" />
+                                                    </div>
+                                                    {anchor?.start && anchor?.end ? (
+                                                      <p className="text-xs italic text-gray-500 mt-0.5 truncate">
+                                                        "{anchor.start}" ... "{anchor.end}"
+                                                      </p>
+                                                    ) : anchor?.text ? (
+                                                      <p className="text-xs italic text-gray-500 mt-0.5 truncate">
+                                                        "{anchor.text}"
+                                                      </p>
+                                                    ) : null}
+                                                  </button>
+                                                );
+                                              })}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
                               )}
-                            </button>
+                            </div>
                           );
                         })}
                       </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="h-full flex items-center justify-center text-gray-400">
-                <div className="text-center">
-                  <Hash className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                  <p>Select a code to view details</p>
-                </div>
-              </div>
-            )}
-          </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1791,10 +2140,13 @@ export default function KnowledgeBaseApp() {
   // Global parsing state - blocks all parse buttons
   const isGlobalParsing = parsingAll;
 
-  const handleDocumentClick = (docId, page = null, highlightCode = null) => {
+  const [codeToExpand, setCodeToExpand] = useState(null);
+
+  const handleDocumentClick = (docId, page = null, highlightCode = null, codeInfo = null) => {
     setSelectedDocId(docId);
     setInitialPage(page);
     setHighlightCode(highlightCode);
+    setCodeToExpand(codeInfo);  // { code, type } to expand in Codes tab
     setShowCodeIndex(false);
   };
 
@@ -2149,14 +2501,16 @@ export default function KnowledgeBaseApp() {
       
       {/* Document Viewer Modal */}
       {selectedDocId && (
-        <DocumentViewer 
+        <DocumentViewer
           docId={selectedDocId}
           initialPage={initialPage}
           highlightCode={highlightCode}
+          codeToExpand={codeToExpand}
           onClose={() => {
             setSelectedDocId(null);
             setInitialPage(null);
             setHighlightCode(null);
+            setCodeToExpand(null);
           }}
           onCodeClick={handleCodeClick}
         />

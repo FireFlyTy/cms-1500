@@ -1164,9 +1164,9 @@ async def list_codes() -> List[CodeIndexItem]:
 
 
 @router.get("/codes/{code}")
-async def get_code_details(code: str):
-    """Детали по конкретному коду"""
-    
+async def get_code_details(code: str, code_type: str = None):
+    """Детали по конкретному коду. code_type фильтрует по типу (ICD-10, CPT, HCPCS)."""
+
     # Normalize the requested code
     normalized_code = normalize_code_pattern(code)
 
@@ -1175,12 +1175,21 @@ async def get_code_details(code: str):
 
     try:
         # Search for both original and normalized code patterns, include page_numbers
-        cursor.execute("""
-            SELECT DISTINCT d.file_hash, d.filename, d.doc_type, dc.code_type, dc.description, dc.page_numbers
-            FROM documents d
-            JOIN document_codes dc ON d.file_hash = dc.document_id
-            WHERE dc.code_pattern = ? OR dc.code_pattern = ?
-        """, (code, normalized_code))
+        # Filter by code_type if provided
+        if code_type:
+            cursor.execute("""
+                SELECT DISTINCT d.file_hash, d.filename, d.doc_type, dc.code_type, dc.description, dc.page_numbers
+                FROM documents d
+                JOIN document_codes dc ON d.file_hash = dc.document_id
+                WHERE (dc.code_pattern = ? OR dc.code_pattern = ?) AND dc.code_type = ?
+            """, (code, normalized_code, code_type))
+        else:
+            cursor.execute("""
+                SELECT DISTINCT d.file_hash, d.filename, d.doc_type, dc.code_type, dc.description, dc.page_numbers
+                FROM documents d
+                JOIN document_codes dc ON d.file_hash = dc.document_id
+                WHERE dc.code_pattern = ? OR dc.code_pattern = ?
+            """, (code, normalized_code))
     except:
         conn.close()
         raise HTTPException(status_code=404, detail="Code not found")
@@ -1229,26 +1238,26 @@ async def get_code_details(code: str):
                         for page_code in page.get('codes', []):
                             page_code_normalized = normalize_code_pattern(page_code.get('code', ''))
                             if page_code_normalized == normalized_code or page_code.get('code') == code:
-                                # Get anchor from code object directly (anchor_start/anchor_end format)
+                                # Get anchor and reason from code object directly
+                                anchor_info = {'page': page_num}
                                 if page_code.get('anchor_start'):
-                                    code_anchors_map[page_num] = {
-                                        'start': page_code.get('anchor_start'),
-                                        'end': page_code.get('anchor_end'),
-                                        'page': page_num
-                                    }
+                                    anchor_info['start'] = page_code.get('anchor_start')
+                                    anchor_info['end'] = page_code.get('anchor_end')
                                 elif page_code.get('anchor'):
-                                    code_anchors_map[page_num] = {
-                                        'text': page_code.get('anchor'),
-                                        'page': page_num
-                                    }
+                                    anchor_info['text'] = page_code.get('anchor')
+                                # Include reason
+                                anchor_info['reason'] = page_code.get('reason') or page_code.get('context')
+                                code_anchors_map[page_num] = anchor_info
                                 break
 
                 for page_num in page_nums:
                     page_data = page_content_map.get(page_num, {})
+                    anchor_data = code_anchors_map.get(page_num)
                     pages_info.append({
                         'page': page_num,
                         'context': desc,
-                        'anchor': code_anchors_map.get(page_num),  # Include anchor
+                        'reason': anchor_data.get('reason') if anchor_data else None,
+                        'anchor': anchor_data,
                         'topics': page_data.get('topics', []),
                         'content_preview': page_data.get('content')
                     })
@@ -1270,20 +1279,20 @@ async def get_code_details(code: str):
                         page_code_normalized = normalize_code_pattern(page_code.get('code', ''))
                         if page_code_normalized == normalized_code or page_code.get('code') == code:
                             seen_pages.add(page_num)
-                            # Get anchor from code object directly (anchor_start/anchor_end format)
-                            anchor = None
+                            # Get anchor and reason from code object directly
+                            anchor = {'page': page_num}
                             if page_code.get('anchor_start'):
-                                anchor = {
-                                    'start': page_code.get('anchor_start'),
-                                    'end': page_code.get('anchor_end'),
-                                    'page': page_num
-                                }
+                                anchor['start'] = page_code.get('anchor_start')
+                                anchor['end'] = page_code.get('anchor_end')
                             elif page_code.get('anchor'):
-                                anchor = {'text': page_code.get('anchor'), 'page': page_num}
+                                anchor['text'] = page_code.get('anchor')
+                            # Get reason
+                            reason = page_code.get('reason') or page_code.get('context')
                             pages_info.append({
                                 'page': page_num,
                                 'context': page_code.get('context'),
-                                'anchor': anchor,  # Include anchor (start/end or text)
+                                'reason': reason,
+                                'anchor': anchor,
                                 'topics': page.get('topics', []),
                                 'content_preview': page.get('content', '')[:200] if page.get('content') else None
                             })
@@ -1376,6 +1385,12 @@ async def get_stats():
         'codes_indexed': codes_count,
         'reference_data': ref_stats
     }
+
+
+@router.get("/meta-categories")
+async def get_meta_categories_endpoint():
+    """Returns meta_categories.json for UI display."""
+    return get_meta_categories()
 
 
 @router.post("/cleanup-orphaned-codes")

@@ -102,6 +102,11 @@
         "name": "Injuries, poisoning and other consequences of external causes",
         "includes": ["burns", "poisoning", "drug adverse effects", "complications of care"]
       },
+      "U": {
+        "range": "U00-U99",
+        "name": "Codes for special purposes",
+        "includes": ["emergency use codes", "COVID-19", "antimicrobial resistance", "new diseases", "provisional codes"]
+      },
       "V": {
         "range": "V00-V99",
         "name": "Transport accidents",
