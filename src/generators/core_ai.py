@@ -27,6 +27,50 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-5.1")
 REASONING_EFFORT = os.getenv("REASONING_EFFORT", "low")
 
+# ==========================================
+# PIPELINE MODELS CONFIG
+# ==========================================
+# Variant selection: "gemini", "openai", or "hybrid"
+PIPELINE_VARIANT = os.getenv("PIPELINE_VARIANT", "hybrid").lower()
+
+# Gemini variant - fast/cheap with smart validators
+PIPELINE_MODELS_GEMINI = {
+    "draft":        {"model": "gemini-2.5-flash-lite", "thinking_budget": 0},
+    "mentor":       {"model": "gemini-2.5-flash", "thinking_budget": 2000},
+    "redteam":      {"model": "gemini-2.5-flash", "thinking_budget": 2000},
+    "arbitration":  {"model": "gemini-2.5-flash", "thinking_budget": 1500},
+    "finalization": {"model": "gemini-2.5-flash-lite", "thinking_budget": 0},
+}
+
+# OpenAI variant - all OpenAI models
+PIPELINE_MODELS_OPENAI = {
+    "draft":        {"model": "gpt-4.1-mini", "reasoning_effort": None},
+    "mentor":       {"model": "gpt-5.2", "reasoning_effort": "low"},
+    "redteam":      {"model": "gpt-5.2", "reasoning_effort": "low"},
+    "arbitration":  {"model": "gpt-5.2", "reasoning_effort": "low"},
+    "finalization": {"model": "gpt-4.1-mini", "reasoning_effort": None},
+}
+
+# Hybrid variant - Gemini for generation, gpt-5.2 for all validation
+PIPELINE_MODELS_HYBRID = {
+    "draft":        {"provider": "gemini", "model": "gemini-2.5-flash-lite", "thinking_budget": 0},
+    "mentor":       {"provider": "openai", "model": "gpt-5.2", "reasoning_effort": "low"},
+    "redteam":      {"provider": "openai", "model": "gpt-5.2", "reasoning_effort": "low"},
+    "arbitration":  {"provider": "openai", "model": "gpt-5.2", "reasoning_effort": "low"},
+    "finalization": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "thinking_budget": 0},
+}
+
+# Models that support reasoning_effort parameter
+OPENAI_REASONING_MODELS = {"gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5.2", "o1", "o1-mini", "o3", "o3-mini"}
+
+def get_pipeline_config():
+    """Get current pipeline models configuration."""
+    if PIPELINE_VARIANT == "openai":
+        return PIPELINE_MODELS_OPENAI, "openai"
+    elif PIPELINE_VARIANT == "hybrid":
+        return PIPELINE_MODELS_HYBRID, "hybrid"
+    return PIPELINE_MODELS_GEMINI, "gemini"
+
 # Initialize Clients
 google_client = None
 openai_client = None
@@ -41,14 +85,15 @@ if OPENAI_API_KEY:
 # ==========================================
 # IMPLEMENTATION: GOOGLE GEMINI
 # ==========================================
-async def _stream_google(prompt: str, thinking_budget: int) -> AsyncGenerator[str, None]:
-    print(f"--- [DEBUG] Strategy: GOOGLE ({GOOGLE_MODEL_NAME}) ---")
+async def _stream_google(prompt: str, thinking_budget: int, model: str = None) -> AsyncGenerator[str, None]:
+    model = model or GOOGLE_MODEL_NAME
+    print(f"--- [DEBUG] Strategy: GOOGLE ({model}) ---")
 
     if not google_client:
         yield json.dumps({"type": "error", "content": "GOOGLE_API_KEY is missing"}) + "\n\n"
         return
 
-    yield json.dumps({"type": "status", "content": f"Initializing {GOOGLE_MODEL_NAME}..."}) + "\n\n"
+    yield json.dumps({"type": "status", "content": f"Initializing {model}..."}) + "\n\n"
 
     try:
         contents = [types.Content(role='user', parts=[types.Part.from_text(text=prompt)])]
@@ -68,7 +113,7 @@ async def _stream_google(prompt: str, thinking_budget: int) -> AsyncGenerator[st
             )
 
         response_stream = await google_client.aio.models.generate_content_stream(
-            model=GOOGLE_MODEL_NAME,
+            model=model,
             contents=contents,
             config=config
         )
@@ -126,7 +171,7 @@ async def _stream_openai(prompt: str) -> AsyncGenerator[str, None]:
         }
 
         # Add reasoning_effort only for models that support it
-        if OPENAI_MODEL_NAME in ["gpt-5.1", "o1", "o1-mini", "o3", "o3-mini"]:
+        if OPENAI_MODEL_NAME in OPENAI_REASONING_MODELS:
             params["reasoning_effort"] = REASONING_EFFORT
 
         stream = await openai_client.chat.completions.create(**params)
@@ -177,7 +222,7 @@ async def call_openai_model(
         }
 
         # Add reasoning_effort only for models that support it (gpt-5.1, o1, o3, etc.)
-        if reasoning_effort and model in ["gpt-5.1", "o1", "o1-mini", "o3", "o3-mini"]:
+        if reasoning_effort and model in OPENAI_REASONING_MODELS:
             params["reasoning_effort"] = reasoning_effort
 
         response = await openai_client.chat.completions.create(**params)
@@ -220,7 +265,7 @@ async def stream_openai_model(
         }
 
         # Add reasoning_effort only for models that support it
-        if reasoning_effort and model in ["gpt-5.1", "o1", "o1-mini", "o3", "o3-mini"]:
+        if reasoning_effort and model in OPENAI_REASONING_MODELS:
             params["reasoning_effort"] = reasoning_effort
 
         stream = await openai_client.chat.completions.create(**params)
@@ -304,4 +349,52 @@ async def stream_gemini_generator(prompt: str, thinking_budget=2048) -> AsyncGen
             yield chunk
     else:
         async for chunk in _stream_google(prompt, thinking_budget):
+            yield chunk
+
+
+# ==========================================
+# PIPELINE STEP ROUTER
+# ==========================================
+async def stream_pipeline_step(
+    prompt: str,
+    step: str,
+    thinking_budget_override: int = None
+) -> AsyncGenerator[str, None]:
+    """
+    Stream response using model configured for the pipeline step.
+
+    Args:
+        prompt: The prompt to send
+        step: Pipeline step name (draft, mentor, redteam, arbitration, finalization)
+        thinking_budget_override: Override thinking budget (Gemini only)
+
+    Yields:
+        JSON chunks with type and content
+    """
+    config, variant = get_pipeline_config()
+
+    if step not in config:
+        # Fallback to default
+        step_config = config.get("draft", {})
+    else:
+        step_config = config[step]
+
+    # Determine provider for this step
+    # Hybrid variant has per-step provider, others use variant as provider
+    if variant == "hybrid":
+        provider = step_config.get("provider", "gemini")
+    elif variant == "openai":
+        provider = "openai"
+    else:
+        provider = "gemini"
+
+    if provider == "openai":
+        model = step_config.get("model", "gpt-4.1-mini")
+        reasoning_effort = step_config.get("reasoning_effort")
+        async for chunk in stream_openai_model(prompt, model=model, reasoning_effort=reasoning_effort):
+            yield chunk
+    else:
+        model = step_config.get("model", "gemini-2.5-flash")
+        thinking_budget = thinking_budget_override if thinking_budget_override is not None else step_config.get("thinking_budget", 0)
+        async for chunk in _stream_google(prompt, thinking_budget=thinking_budget, model=model):
             yield chunk

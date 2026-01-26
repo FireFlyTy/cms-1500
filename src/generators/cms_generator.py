@@ -156,16 +156,17 @@ class CMSRuleGenerator:
             ).to_json()
 
             # 1. Load guideline rule (if exists)
-            yield self._event("pipeline", "status", "Loading guideline rule...").to_json()
+            t1 = time.time()
             guideline_rule, guideline_meta = self._load_guideline_rule(code)
+            guideline_load_ms = (time.time() - t1) * 1000
 
             if guideline_rule:
                 yield self._event("pipeline", "status",
-                    f"Found guideline rule v{guideline_meta.get('version', '?')}"
+                    f"Loaded guideline v{guideline_meta.get('version', '?')} ({guideline_load_ms:.0f}ms)"
                 ).to_json()
             else:
                 yield self._event("pipeline", "status",
-                    "No guideline rule found - will use NCCI edits only"
+                    f"No guideline rule found ({guideline_load_ms:.0f}ms)"
                 ).to_json()
 
             # 2. Fetch NCCI edits (for CPT/HCPCS only)
@@ -173,26 +174,38 @@ class CMSRuleGenerator:
             ncci_text = "**Not applicable** - This is an ICD-10 diagnosis code. NCCI edits apply only to CPT/HCPCS procedure codes."
 
             if code_type in ("CPT", "HCPCS"):
-                yield self._event("pipeline", "status", "Fetching NCCI edits from database...").to_json()
+                t2 = time.time()
                 ncci_edits = self._fetch_ncci_edits(code)
                 ncci_text = self._format_ncci_for_prompt(ncci_edits, code)
+                ncci_load_ms = (time.time() - t2) * 1000
 
                 ptp_count = len(ncci_edits.ptp_edits) if ncci_edits else 0
                 mue_info = f"MUE={ncci_edits.mue_value}" if ncci_edits and ncci_edits.mue_value else "No MUE"
                 yield self._event("pipeline", "status",
-                    f"Found {ptp_count} PTP edits, {mue_info}"
+                    f"Found {ptp_count} PTP edits, {mue_info} ({ncci_load_ms:.0f}ms)"
                 ).to_json()
 
             # 3. Load CMS-1500 schema
-            yield self._event("pipeline", "status", "Loading CMS-1500 schema...").to_json()
+            t3 = time.time()
             cms_schema = self._load_cms_schema()
+            schema_load_ms = (time.time() - t3) * 1000
 
             if not cms_schema:
                 yield self._event("pipeline", "error", "Failed to load CMS-1500 schema").to_json()
                 return
 
+            yield self._event("pipeline", "status",
+                f"Loaded CMS-1500 schema ({schema_load_ms:.0f}ms)"
+            ).to_json()
+
             # 4. Get code description
+            t4 = time.time()
             description = self._get_code_description(code, code_type)
+            desc_load_ms = (time.time() - t4) * 1000
+
+            yield self._event("pipeline", "timing",
+                f"Setup complete: guideline={guideline_load_ms:.0f}ms, schema={schema_load_ms:.0f}ms, desc={desc_load_ms:.0f}ms"
+            ).to_json()
 
             # Check if we have anything to process
             if not guideline_rule and (not ncci_edits or (not ncci_edits.ptp_edits and ncci_edits.mue_value is None)):

@@ -223,10 +223,12 @@ class HierarchyRuleGenerator:
 
     # Default model - can be overridden via env var or constructor
     DEFAULT_MODEL = os.getenv("RULE_GENERATOR_MODEL", "gemini")  # "gemini" or "gpt-4.1"
+    DEFAULT_JSON_VALIDATORS = os.getenv("RULE_GENERATOR_JSON_VALIDATORS", "false").lower() == "true"
 
-    def __init__(self, thinking_budget: int = 10000, model: str = None):
+    def __init__(self, thinking_budget: int = 10000, model: str = None, json_validators: bool = None):
         self.thinking_budget = thinking_budget
         self.model = model or self.DEFAULT_MODEL
+        self.json_validators = json_validators if json_validators is not None else self.DEFAULT_JSON_VALIDATORS
         self._conn = None
 
     def _get_conn(self):
@@ -810,7 +812,8 @@ class HierarchyRuleGenerator:
 
         rule_content = None
         if row[1] and os.path.exists(row[1]):
-            rule_json = os.path.join(os.path.dirname(row[1]), "rule.json")
+            rule_dir = row[1] if os.path.isdir(row[1]) else os.path.dirname(row[1])
+            rule_json = os.path.join(rule_dir, "rule.json")
             if os.path.exists(rule_json):
                 with open(rule_json, 'r', encoding='utf-8') as f:
                     rule_content = json.load(f)
@@ -851,6 +854,10 @@ class HierarchyRuleGenerator:
         # Step 1: Plan
         plan = self.plan_guideline_generation(code, code_type)
 
+        # If force_regenerate, add target code to patterns_to_generate
+        if force_regenerate and code not in plan.patterns_to_generate:
+            plan.patterns_to_generate.append(code)
+
         if not plan.patterns_to_generate:
             lookup = self.find_applicable_rule(code, "guideline", code_type)
             yield json.dumps({
@@ -884,6 +891,23 @@ class HierarchyRuleGenerator:
 
             # Get parent rule (will be None for meta-category)
             parent_rule = self.get_parent_rule_content(pattern, "guideline", code_type)
+
+            # Log parent rule status
+            parent_patterns = get_hierarchy_patterns(pattern, code_type)
+            if len(parent_patterns) > 1:
+                parent_pattern = parent_patterns[1]
+                if parent_rule and parent_rule.get("content"):
+                    yield json.dumps({
+                        "step": "guideline",
+                        "type": "status",
+                        "content": f"Found parent guideline rule from DB: {parent_pattern}"
+                    }, ensure_ascii=False)
+                else:
+                    yield json.dumps({
+                        "step": "guideline",
+                        "type": "status",
+                        "content": f"No parent guideline rule found for {parent_pattern}"
+                    }, ensure_ascii=False)
 
             yield json.dumps({
                 "step": "guideline",
@@ -939,9 +963,18 @@ class HierarchyRuleGenerator:
             JSON SSE events
         """
         import json
+        import time
 
         # Step 1: Plan (includes prerequisite check)
+        t0 = time.time()
         plan = self.plan_cms1500_generation(code, code_type)
+        plan_time = (time.time() - t0) * 1000
+
+        yield json.dumps({
+            "step": "cms1500",
+            "type": "timing",
+            "content": f"Planning took {plan_time:.0f}ms"
+        }, ensure_ascii=False)
 
         if not plan.prerequisite_met:
             yield json.dumps({
@@ -991,6 +1024,7 @@ class HierarchyRuleGenerator:
                     continue
 
             # Get parent CMS-1500 rule - check cascade cache first
+            t1 = time.time()
             parent_cms1500 = None
             parent_patterns = get_hierarchy_patterns(pattern, code_type)
             if len(parent_patterns) > 1:
@@ -1022,9 +1056,18 @@ class HierarchyRuleGenerator:
                             "type": "status",
                             "content": f"No parent CMS rule found for {parent_pattern} in DB"
                         }, ensure_ascii=False)
+            parent_lookup_time = (time.time() - t1) * 1000
 
             # Get guideline for this pattern
+            t2 = time.time()
             guideline = self.get_guideline_for_pattern(pattern, code_type)
+            guideline_lookup_time = (time.time() - t2) * 1000
+
+            yield json.dumps({
+                "step": "cms1500",
+                "type": "timing",
+                "content": f"Lookups: parent={parent_lookup_time:.0f}ms, guideline={guideline_lookup_time:.0f}ms"
+            }, ensure_ascii=False)
 
             yield json.dumps({
                 "step": "cms1500",
@@ -1150,7 +1193,11 @@ class HierarchyRuleGenerator:
         # Use different generators for guideline vs CMS-1500
         if rule_type == "guideline":
             # Guideline: 5-step pipeline (draft → mentor → redteam → arbitration → finalization)
-            generator = RuleGenerator(thinking_budget=self.thinking_budget, model=self.model)
+            generator = RuleGenerator(
+                thinking_budget=self.thinking_budget,
+                model=self.model,
+                json_validators=self.json_validators
+            )
             async for event_json in generator.stream_pipeline(
                 code=pattern,
                 document_ids=doc_ids if doc_ids else None,
@@ -1215,13 +1262,15 @@ class HierarchyRuleGenerator:
 
         if rule_type == "guideline" and save_path:
             from datetime import datetime
+            rule_level = get_pattern_type(pattern, code_type)
+            # Use INSERT OR REPLACE to handle existing rules
             cursor.execute("""
-                INSERT INTO rules (code, code_type, rule_level, status, rule_path, source_documents, generated_at)
+                INSERT OR REPLACE INTO rules (code, code_type, rule_level, status, rule_path, source_documents, generated_at)
                 VALUES (?, ?, ?, 'ready', ?, ?, ?)
             """, (
                 pattern,
                 code_type,
-                get_pattern_type(pattern, code_type),
+                rule_level,
                 save_path,
                 json.dumps(source_documents),
                 datetime.now().isoformat()
@@ -1339,7 +1388,8 @@ class HierarchyRuleGenerator:
                 if row:
                     rule_content = None
                     if row[1] and os.path.exists(row[1]):
-                        rule_json = os.path.join(os.path.dirname(row[1]), "rule.json")
+                        rule_dir = row[1] if os.path.isdir(row[1]) else os.path.dirname(row[1])
+                        rule_json = os.path.join(rule_dir, "rule.json")
                         if os.path.exists(rule_json):
                             with open(rule_json, 'r', encoding='utf-8') as f:
                                 rule_content = json.load(f)
@@ -1488,7 +1538,8 @@ class HierarchyRuleGenerator:
         # Load rule content
         rule_content = None
         if rule_path and os.path.exists(rule_path):
-            rule_json = os.path.join(os.path.dirname(rule_path), "rule.json")
+            rule_dir = rule_path if os.path.isdir(rule_path) else os.path.dirname(rule_path)
+            rule_json = os.path.join(rule_dir, "rule.json")
             if os.path.exists(rule_json):
                 with open(rule_json, 'r', encoding='utf-8') as f:
                     rule_content = json.load(f)

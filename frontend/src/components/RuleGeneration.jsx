@@ -1332,6 +1332,7 @@ export default function RuleGeneration() {
   const [selectedCodes, setSelectedCodes] = useState(new Set());
   const [generating, setGenerating] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
+  const [jsonValidators, setJsonValidators] = useState(true); // Faster JSON mode for validators
 
   // Auto-select first category when categories load
   useEffect(() => {
@@ -1412,7 +1413,8 @@ export default function RuleGeneration() {
           code,
           code_type: 'ICD-10',
           parallel_validators: true,
-          force_regenerate: forceRegenerate
+          force_regenerate: forceRegenerate,
+          json_validators: jsonValidators
         })
       });
 
@@ -1635,13 +1637,24 @@ export default function RuleGeneration() {
               {total_with_rules} / {total_codes} codes have rules
             </p>
           </div>
-          <button
-            onClick={refetch}
-            className="p-2 hover:bg-gray-100 rounded-lg"
-            title="Refresh data"
-          >
-            <RefreshCw className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer" title="Use JSON format for validator outputs (faster)">
+              <input
+                type="checkbox"
+                checked={jsonValidators}
+                onChange={(e) => setJsonValidators(e.target.checked)}
+                className="w-3.5 h-3.5 rounded"
+              />
+              Fast mode
+            </label>
+            <button
+              onClick={refetch}
+              className="p-2 hover:bg-gray-100 rounded-lg"
+              title="Refresh data"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </div>
 

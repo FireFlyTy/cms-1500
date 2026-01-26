@@ -152,6 +152,7 @@ class GenerateRuleRequest(BaseModel):
     thinking_budget: int = 10000
     model: Optional[str] = None  # "gemini" or "gpt-4.1" (env var RULE_GENERATOR_MODEL if not set)
     force_regenerate: bool = False  # Regenerate even if rule exists
+    json_validators: bool = False  # JSON output for validators (faster) - env var RULE_GENERATOR_JSON_VALIDATORS
 
 
 class BatchGenerateRequest(BaseModel):
@@ -1022,7 +1023,11 @@ async def generate_rule_endpoint(code: str, request: GenerateRuleRequest):
         )
 
     async def event_stream():
-        generator = HierarchyRuleGenerator(thinking_budget=request.thinking_budget, model=request.model)
+        generator = HierarchyRuleGenerator(
+            thinking_budget=request.thinking_budget,
+            model=request.model,
+            json_validators=request.json_validators
+        )
 
         async for event in generator.generate_guideline(
             code=code,

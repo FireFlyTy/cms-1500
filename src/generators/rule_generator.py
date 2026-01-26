@@ -26,13 +26,17 @@ from datetime import datetime
 from string import Template
 
 from .context_builder import build_sources_context, SourcesContext, SourceDocument
-from .core_ai import stream_gemini_generator, stream_openai_model
+from .core_ai import stream_gemini_generator, stream_openai_model, stream_pipeline_step
 from .prompts import (
     PROMPT_CODE_RULE_DRAFT,
     PROMPT_CODE_RULE_VALIDATION_MENTOR,
     PROMPT_CODE_RULE_VALIDATION_REDTEAM,
     PROMPT_CODE_RULE_VALIDATION_ARBITRATION,
     PROMPT_CODE_RULE_FINALIZATION,
+    # JSON variants (faster)
+    PROMPT_CODE_RULE_VALIDATION_MENTOR_JSON,
+    PROMPT_CODE_RULE_VALIDATION_REDTEAM_JSON,
+    PROMPT_CODE_RULE_VALIDATION_ARBITRATION_JSON,
 )
 
 # Import validators
@@ -53,6 +57,36 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 RULES_DIR = os.path.join(BASE_DIR, "data", "processed", "rules")
 
 os.makedirs(RULES_DIR, exist_ok=True)
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def strip_json_fences(text: str) -> str:
+    """Strip markdown code fences from JSON output.
+
+    Models often return JSON wrapped in ```json ... ``` markers.
+    This function removes them to get clean JSON.
+    """
+    text = text.strip()
+    # Remove ```json ... ``` or ``` ... ```
+    if text.startswith("```json"):
+        text = text[7:]
+    elif text.startswith("```"):
+        text = text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    return text.strip()
+
+
+def parse_json_safely(text: str) -> dict:
+    """Parse JSON from text, handling markdown fences."""
+    cleaned = strip_json_fences(text)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {}
 
 
 # ============================================================
@@ -121,17 +155,31 @@ class RuleGenerator:
     # Default model - can be overridden via env var or constructor
     DEFAULT_MODEL = os.getenv("RULE_GENERATOR_MODEL", "gemini")  # "gemini" or "gpt-4.1"
 
-    def __init__(self, thinking_budget: int = 10000, model: str = None):
+    # JSON validators flag - faster but less detailed output
+    DEFAULT_JSON_VALIDATORS = os.getenv("RULE_GENERATOR_JSON_VALIDATORS", "false").lower() == "true"
+
+    def __init__(self, thinking_budget: int = 10000, model: str = None, json_validators: bool = None):
         self.thinking_budget = thinking_budget
         self.model = model or self.DEFAULT_MODEL
+        self.json_validators = json_validators if json_validators is not None else self.DEFAULT_JSON_VALIDATORS
         self._sources_ctx: Optional[SourcesContext] = None
         self._doc_pages: Optional[Dict] = None
         self._results: Dict[str, StepResult] = {}
         self._inheritance_context: Optional[str] = None
 
-    async def _stream_model(self, prompt: str) -> AsyncGenerator[str, None]:
-        """Stream from configured model (Gemini or OpenAI)."""
-        if self.model.startswith("gpt"):
+    async def _stream_model(self, prompt: str, step: str = None) -> AsyncGenerator[str, None]:
+        """Stream from configured model based on pipeline step.
+
+        Args:
+            prompt: The prompt to send
+            step: Pipeline step (draft, mentor, redteam, arbitration, finalization)
+                  If provided, uses PIPELINE_MODELS config for model selection.
+        """
+        if step:
+            # Use pipeline config for model selection (step config controls thinking_budget)
+            async for chunk in stream_pipeline_step(prompt, step=step):
+                yield chunk
+        elif self.model.startswith("gpt"):
             async for chunk in stream_openai_model(prompt, model=self.model):
                 yield chunk
         else:
@@ -354,21 +402,33 @@ class RuleGenerator:
         """Запускает Mentor и RedTeam параллельно с interleaved streaming."""
         draft = self._results["draft"]
         citation_errors = format_citation_errors_for_prompt(draft.citations_check)
-        
-        yield self._event("validation", "status", "Running Mentor + RedTeam in parallel...").to_json()
-        
-        # Prepare prompts
-        mentor_prompt = PROMPT_CODE_RULE_VALIDATION_MENTOR.substitute(
-            sources=self._sources_ctx.sources_text,
-            instructions=draft.output,
-            citation_errors=citation_errors
-        )
-        
-        redteam_prompt = PROMPT_CODE_RULE_VALIDATION_REDTEAM.substitute(
-            sources=self._sources_ctx.sources_text,
-            instructions=draft.output,
-            citation_errors=citation_errors
-        )
+
+        mode = "JSON" if self.json_validators else "Markdown"
+        yield self._event("validation", "status", f"Running Mentor + RedTeam in parallel ({mode} mode)...").to_json()
+
+        # Select prompts based on mode
+        if self.json_validators:
+            mentor_prompt = PROMPT_CODE_RULE_VALIDATION_MENTOR_JSON.substitute(
+                sources=self._sources_ctx.sources_text,
+                instructions=draft.output,
+                citation_errors=citation_errors
+            )
+            redteam_prompt = PROMPT_CODE_RULE_VALIDATION_REDTEAM_JSON.substitute(
+                sources=self._sources_ctx.sources_text,
+                instructions=draft.output,
+                citation_errors=citation_errors
+            )
+        else:
+            mentor_prompt = PROMPT_CODE_RULE_VALIDATION_MENTOR.substitute(
+                sources=self._sources_ctx.sources_text,
+                instructions=draft.output,
+                citation_errors=citation_errors
+            )
+            redteam_prompt = PROMPT_CODE_RULE_VALIDATION_REDTEAM.substitute(
+                sources=self._sources_ctx.sources_text,
+                instructions=draft.output,
+                citation_errors=citation_errors
+            )
         
         # Create queues for interleaved streaming
         mentor_queue = asyncio.Queue()
@@ -379,7 +439,7 @@ class RuleGenerator:
         
         async def stream_to_queue(prompt: str, queue: asyncio.Queue, step: str, result: dict):
             try:
-                async for chunk in self._stream_model(prompt):
+                async for chunk in self._stream_model(prompt, step=step):
                     data = json.loads(chunk.strip())
                     data["step"] = step
                     
@@ -472,25 +532,36 @@ class RuleGenerator:
     async def _stream_arbitration(self) -> AsyncGenerator[str, None]:
         """Генерирует Arbitration (объединение Mentor + RedTeam)."""
         step = "arbitration"
-        yield self._event(step, "status", "Running arbitration...").to_json()
-        
+        mode = "JSON" if self.json_validators else "Markdown"
+        yield self._event(step, "status", f"Running arbitration ({mode} mode)...").to_json()
+
         draft = self._results["draft"]
         mentor = self._results.get("mentor")
         redteam = self._results.get("redteam")
-        
+
         if not mentor or not redteam:
             yield self._event(step, "error", "Missing validator results").to_json()
             return
-        
+
         citation_errors = format_citation_errors_for_prompt(draft.citations_check)
-        
-        prompt = PROMPT_CODE_RULE_VALIDATION_ARBITRATION.substitute(
-            sources=self._sources_ctx.sources_text,
-            instructions=draft.output,
-            verdict1=mentor.output,
-            verdict2=redteam.output,
-            citation_errors=citation_errors
-        )
+
+        # Select prompt based on mode
+        if self.json_validators:
+            prompt = PROMPT_CODE_RULE_VALIDATION_ARBITRATION_JSON.substitute(
+                sources=self._sources_ctx.sources_text,
+                instructions=draft.output,
+                verdict1=mentor.output,
+                verdict2=redteam.output,
+                citation_errors=citation_errors
+            )
+        else:
+            prompt = PROMPT_CODE_RULE_VALIDATION_ARBITRATION.substitute(
+                sources=self._sources_ctx.sources_text,
+                instructions=draft.output,
+                verdict1=mentor.output,
+                verdict2=redteam.output,
+                citation_errors=citation_errors
+            )
         
         full_text, thinking, duration_ms = "", "", 0
         async for event_json, final in self._stream_step_with_events(step, prompt):
@@ -591,7 +662,7 @@ class RuleGenerator:
         full_text = ""
         thinking = ""
 
-        async for chunk in self._stream_model(prompt):
+        async for chunk in self._stream_model(prompt, step=step):
             data = json.loads(chunk.strip())
             
             if data["type"] == "thought":
@@ -643,24 +714,47 @@ class RuleGenerator:
     
     def _count_corrections(self, text: str) -> int:
         """Считает количество corrections в output Mentor."""
+        # Try JSON first (for json_validators mode)
+        parsed = parse_json_safely(text)
+        if parsed and "corrections" in parsed:
+            return len(parsed["corrections"])
+        # Fallback to markdown markers
         count = 0
         for marker in ["**CLARIFY**", "**CHANGE**", "**ADD_SOURCE**", "**FIX_PAGE**", "**FIX_DOC**"]:
             count += text.count(marker)
         return count
-    
+
     def _count_risks(self, text: str) -> int:
         """Считает количество рисков в output RedTeam."""
+        # Try JSON first
+        parsed = parse_json_safely(text)
+        if parsed and "risks_found" in parsed:
+            return parsed["risks_found"]
+        if parsed and "corrections" in parsed:
+            return len(parsed["corrections"])
+        # Fallback to markdown markers
         return text.count("**FIX RISK**") + text.count("**Risk Scenario:**")
-    
+
     def _count_approved_corrections(self, text: str) -> int:
         """Считает количество approved corrections в Arbitration."""
+        # Try JSON first
+        parsed = parse_json_safely(text)
+        if parsed and "approved_corrections" in parsed:
+            return len(parsed["approved_corrections"])
+        # Fallback to markdown markers
         count = 0
         for marker in ["[BLOCK_RISK]", "[ADD_STEP]", "[CLARIFY]", "[FIX_PAGE]", "[FIX_DOC]"]:
             count += text.count(marker)
         return count
-    
+
     def _extract_verdict(self, text: str) -> str:
         """Извлекает verdict из output валидатора."""
+        # Try JSON first
+        parsed = parse_json_safely(text)
+        if parsed and "verdict" in parsed:
+            return parsed["verdict"]
+        if parsed and "safety_status" in parsed:
+            return parsed["safety_status"]
         import re
         # Look for "## N. VERDICT: XXX" pattern
         match = re.search(r'VERDICT:\s*(\w+)', text, re.IGNORECASE)
