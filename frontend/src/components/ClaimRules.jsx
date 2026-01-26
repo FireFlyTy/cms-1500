@@ -36,7 +36,29 @@ function useCategories() {
   return { ...data, loading, refetch: fetch_ };
 }
 
-function useCategoryCodesWithCMS(categoryName) {
+function useCategoriesByType() {
+  const [data, setData] = useState({});
+  const [loading, setLoading] = useState(true);
+
+  const fetch_ = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/categories-by-type?rule_type=cms`);
+      const json = await res.json();
+      setData(json);
+    } catch (err) {
+      console.error('Failed to fetch categories by type:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetch_(); }, [fetch_]);
+
+  return { data, loading, refetch: fetch_ };
+}
+
+function useCategoryCodesWithCMS(metaCategory, codeType = null) {
   const [data, setData] = useState({
     diagnoses: [],
     procedures: [],
@@ -45,40 +67,56 @@ function useCategoryCodesWithCMS(categoryName) {
   const [loading, setLoading] = useState(false);
 
   const fetchCodes = useCallback(async () => {
-    if (!categoryName) return;
+    if (!metaCategory) return;
 
     setLoading(true);
     try {
-      // Fetch codes from category - already includes rule_status with has_cms1500
-      const res = await fetch(`${API_BASE}/categories/${encodeURIComponent(categoryName)}/codes`);
-      const json = await res.json();
-
       // Map rule_status to cms_rule/guideline_rule format expected by components
-      const mapCode = (code) => ({
-        ...code,
-        cms_rule: {
-          has_rule: code.rule_status?.has_cms1500 || false,
-          rule_id: code.rule_status?.cms1500_rule_id,
-          version: code.rule_status?.cms_version
-        },
-        guideline_rule: {
-          has_rule: code.rule_status?.has_rule || false,
-          rule_id: code.rule_status?.rule_id,
-          version: code.rule_status?.guideline_version
-        }
-      });
+      const mapCode = (code) => {
+        // Support both old (rule_status nested) and new (flat fields) API formats
+        const rs = code.rule_status || {};
+        return {
+          ...code,
+          cms_rule: {
+            has_rule: code.has_cms1500 ?? rs.has_cms1500 ?? false,
+            rule_id: code.cms1500_rule_id ?? rs.cms1500_rule_id,
+            version: code.cms_version ?? rs.cms_version
+          },
+          guideline_rule: {
+            has_rule: code.has_guideline ?? rs.has_rule ?? false,
+            rule_id: code.guideline_rule_id ?? rs.rule_id,
+            version: code.guideline_version ?? rs.guideline_version
+          }
+        };
+      };
 
-      setData({
-        diagnoses: (json.diagnoses || []).map(mapCode),
-        procedures: (json.procedures || []).map(mapCode),
-        total: (json.diagnoses?.length || 0) + (json.procedures?.length || 0)
-      });
+      // If codeType provided, use new endpoint
+      if (codeType) {
+        const res = await fetch(`${API_BASE}/codes-by-meta/${encodeURIComponent(codeType)}/${encodeURIComponent(metaCategory)}`);
+        const json = await res.json();
+
+        setData({
+          diagnoses: (json.diagnoses || []).map(mapCode),
+          procedures: (json.procedures || []).map(mapCode),
+          total: json.total || 0
+        });
+      } else {
+        // Legacy: try old endpoint for backwards compatibility
+        const res = await fetch(`${API_BASE}/categories/${encodeURIComponent(metaCategory)}/codes`);
+        const json = await res.json();
+
+        setData({
+          diagnoses: (json.diagnoses || []).map(mapCode),
+          procedures: (json.procedures || []).map(mapCode),
+          total: (json.diagnoses?.length || 0) + (json.procedures?.length || 0)
+        });
+      }
     } catch (err) {
       console.error('Failed to fetch codes:', err);
     } finally {
       setLoading(false);
     }
-  }, [categoryName]);
+  }, [metaCategory, codeType]);
 
   useEffect(() => {
     fetchCodes();
@@ -88,9 +126,191 @@ function useCategoryCodesWithCMS(categoryName) {
 }
 
 // =============================================================================
-// CATEGORY LIST
+// HIERARCHICAL CATEGORY LIST (by Code Type)
 // =============================================================================
 
+const CODE_TYPE_ORDER = ['ICD-10', 'CPT', 'HCPCS'];
+const CODE_TYPE_ICONS = {
+  'ICD-10': Hash,
+  'CPT': FileText,
+  'HCPCS': Database
+};
+
+const HierarchicalCategoryList = ({
+  categoriesByType,
+  selectedCodeType,
+  selectedMetaCategory,
+  onSelectCategory,
+  loading,
+  onBatchGenerate,
+  viewFilter = 'actionable'
+}) => {
+  const [expandedTypes, setExpandedTypes] = useState(['ICD-10', 'CPT', 'HCPCS']);
+
+  // Helper to get count based on filter
+  const getFilteredCount = (cat) => {
+    switch (viewFilter) {
+      case 'generated': return cat.with_rules || 0;
+      case 'ready': return cat.ready || 0;
+      case 'actionable': return (cat.with_sources || 0);
+      case 'all': return cat.total || 0;
+      default: return cat.total || 0;
+    }
+  };
+
+  const getFilteredTotal = (typeData) => {
+    switch (viewFilter) {
+      case 'generated': return typeData.codes_with_rules || 0;
+      case 'ready': return typeData.codes_ready || 0;
+      case 'actionable': return typeData.codes_with_sources || 0;
+      case 'all': return typeData.total_codes || 0;
+      default: return typeData.total_codes || 0;
+    }
+  };
+
+  const toggleType = (codeType) => {
+    setExpandedTypes(prev =>
+      prev.includes(codeType) ? prev.filter(t => t !== codeType) : [...prev, codeType]
+    );
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-6 h-6 animate-spin text-teal-600" />
+      </div>
+    );
+  }
+
+  if (Object.keys(categoriesByType).length === 0) {
+    return (
+      <div className="text-center py-8 text-gray-400">
+        <p>No categories found</p>
+        <p className="text-sm mt-1">Parse documents first</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {CODE_TYPE_ORDER.map(codeType => {
+        const typeData = categoriesByType[codeType];
+        if (!typeData || typeData.categories.length === 0) return null;
+
+        // Filter categories based on viewFilter
+        const filteredCategories = typeData.categories.filter(cat => getFilteredCount(cat) > 0);
+        const filteredTotal = getFilteredTotal(typeData);
+
+        // Hide entire code type if no categories match filter
+        if (filteredCategories.length === 0) return null;
+
+        const isExpanded = expandedTypes.includes(codeType);
+        const Icon = CODE_TYPE_ICONS[codeType] || Hash;
+        const coveragePercent = filteredTotal > 0
+          ? Math.round((typeData.codes_with_rules / filteredTotal) * 100)
+          : 0;
+
+        return (
+          <div key={codeType} className="border rounded-lg overflow-hidden" style={{ borderColor: '#e5e7eb' }}>
+            {/* Code Type Header */}
+            <button
+              onClick={() => toggleType(codeType)}
+              className="w-full flex items-center gap-2 p-3 bg-gray-50 hover:bg-gray-100 transition-colors"
+            >
+              {isExpanded ? (
+                <ChevronDown className="w-4 h-4 text-gray-500" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-gray-500" />
+              )}
+              <Icon className="w-4 h-4 text-gray-600" />
+              <span className="font-semibold text-sm flex-1 text-left">{codeType}</span>
+              <span className="text-xs text-gray-500 font-mono">
+                {viewFilter === 'generated' || viewFilter === 'ready'
+                  ? filteredTotal
+                  : `${typeData.codes_with_rules}/${filteredTotal}`}
+              </span>
+              <div
+                className="w-16 h-1.5 rounded-full overflow-hidden"
+                style={{ background: '#e5e7eb' }}
+              >
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${coveragePercent}%`,
+                    background: coveragePercent === 100 ? '#059669' : coveragePercent > 0 ? '#0090DA' : '#e5e7eb'
+                  }}
+                />
+              </div>
+            </button>
+
+            {/* Meta Categories */}
+            {isExpanded && (
+              <div className="border-t" style={{ borderColor: '#e5e7eb' }}>
+                {filteredCategories.map(cat => {
+                  const isSelected = selectedCodeType === codeType && selectedMetaCategory === cat.name;
+                  const filteredCount = getFilteredCount(cat);
+                  const catCoverage = filteredCount > 0 ? Math.round((cat.with_rules / filteredCount) * 100) : 0;
+
+                  return (
+                    <button
+                      key={cat.name}
+                      onClick={() => onSelectCategory(codeType, cat.name)}
+                      className="w-full text-left p-2.5 pl-10 transition-all border-b last:border-b-0"
+                      style={{
+                        background: isSelected ? '#f0fdfa' : 'white',
+                        borderColor: '#f3f4f6',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isSelected) e.currentTarget.style.background = '#f9fafb';
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isSelected) e.currentTarget.style.background = 'white';
+                      }}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span
+                          className="font-mono font-bold text-sm"
+                          style={{ color: isSelected ? '#0d9488' : '#374151' }}
+                        >
+                          {cat.name}
+                        </span>
+                        <span className="text-xs font-mono" style={{ color: '#6b7280' }}>
+                          {viewFilter === 'generated' || viewFilter === 'ready'
+                            ? filteredCount
+                            : `${cat.with_rules}/${filteredCount}`}
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        {cat.description}
+                      </div>
+                      {/* Mini progress bar */}
+                      <div className="mt-1.5 flex items-center gap-2">
+                        <div
+                          className="flex-1 h-1 rounded-full overflow-hidden"
+                          style={{ background: '#e5e7eb' }}
+                        >
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${catCoverage}%`,
+                              background: catCoverage === 100 ? '#059669' : catCoverage > 0 ? '#0090DA' : '#e5e7eb'
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// Legacy CategoryList for backwards compatibility (to be removed)
 const CategoryList = ({ categories, selectedCategory, onSelectCategory, loading }) => {
   if (loading) {
     return (
@@ -186,18 +406,25 @@ const CategoryList = ({ categories, selectedCategory, onSelectCategory, loading 
 
 const CodeItem = ({ code, isSelected, generating, onToggleCode, onGenerate, onViewRule }) => {
   const hasCmsRule = code.cms_rule?.has_rule;
-  const hasGuidelineRule = code.guideline_rule?.has_rule || code.rule_status?.has_rule;
+  const hasGuidelineRule = code.guideline_rule?.has_rule;
   const cmsVersion = code.cms_rule?.version;
 
-  // Determine code type for NCCI availability
+  // Determine code type and NCCI availability from API
   const codeType = code.type || 'ICD-10';
-  const hasNcci = codeType === 'CPT' || codeType === 'HCPCS';
+  const isProcedure = codeType === 'CPT' || codeType === 'HCPCS';
+  // For ICD-10: no NCCI. For CPT/HCPCS: use has_ncci from API
+  const hasNcci = isProcedure ? (code.has_ncci ?? false) : false;
+
+  // hasSources: determines if code can be generated (and which section it goes to)
+  // For ICD-10: need guideline
+  // For CPT/HCPCS: need NCCI data
   const hasSources = hasGuidelineRule || hasNcci;
 
-  // Can select: has sources (for generation or regeneration)
+  // Can select: has sources for generation
   const canSelect = hasSources;
 
   // Unified card: white background, left border indicates status
+  // Green = has CMS rule, Blue = can generate, Gray = no sources
   const borderLeftColor = hasCmsRule ? '#059669' : hasSources ? '#0090DA' : '#d1d5db';
 
   return (
@@ -273,9 +500,11 @@ const CodeItem = ({ code, isSelected, generating, onToggleCode, onGenerate, onVi
                 <Eye className="w-3.5 h-3.5" />
                 View
               </button>
-              <span className="text-xs font-medium px-2 py-1 rounded" style={{ background: '#f0fdf4', color: '#059669' }}>
-                v{cmsVersion}
-              </span>
+              {cmsVersion && (
+                <span className="text-xs font-medium px-2 py-1 rounded" style={{ background: '#f0fdf4', color: '#059669' }}>
+                  v{cmsVersion}
+                </span>
+              )}
               {/* Regenerate button for existing rules */}
               <button
                 onClick={() => onGenerate(code.code, true)}
@@ -1587,7 +1816,8 @@ const CodeList = ({
   onGenerate,
   onGenerateSingle,
   onViewRule,
-  generating
+  generating,
+  viewFilter = 'actionable'
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedSections, setExpandedSections] = useState({
@@ -1606,8 +1836,9 @@ const CodeList = ({
   // Categorize codes into three groups
   const hasCmsRule = (code) => code.cms_rule?.has_rule;
   const hasSources = (code) => {
-    const hasGuideline = code.guideline_rule?.has_rule || code.rule_status?.has_rule;
-    const hasNcci = code.type === 'CPT' || code.type === 'HCPCS';
+    const hasGuideline = code.guideline_rule?.has_rule;
+    const isProcedure = code.type === 'CPT' || code.type === 'HCPCS';
+    const hasNcci = isProcedure && code.has_ncci;
     return hasGuideline || hasNcci;
   };
 
@@ -1784,40 +2015,57 @@ const CodeList = ({
         ) : (
           <>
             {/* Generated Rules */}
-            <Section
-              id="generated"
-              icon="✓"
-              title="Generated Rules"
-              count={generatedCodes.length}
-              color="#059669"
-            >
-              <SubSection sectionId="generated" label="Diagnoses" codes={generated.diagnoses} />
-              <SubSection sectionId="generated" label="Procedures" codes={generated.procedures} />
-            </Section>
+            {(viewFilter === 'actionable' || viewFilter === 'generated' || viewFilter === 'all') && generatedCodes.length > 0 && (
+              <Section
+                id="generated"
+                icon="✓"
+                title="Generated Rules"
+                count={generatedCodes.length}
+                color="#059669"
+              >
+                <SubSection sectionId="generated" label="Diagnoses" codes={generated.diagnoses} />
+                <SubSection sectionId="generated" label="Procedures" codes={generated.procedures} />
+              </Section>
+            )}
 
             {/* Ready to Generate */}
-            <Section
-              id="ready"
-              icon="⚡"
-              title="Ready to Generate"
-              count={readyToGenerate.length}
-              color="#0090DA"
-            >
-              <SubSection sectionId="ready" label="Diagnoses" codes={ready.diagnoses} />
-              <SubSection sectionId="ready" label="Procedures" codes={ready.procedures} />
-            </Section>
+            {(viewFilter === 'actionable' || viewFilter === 'ready' || viewFilter === 'all') && readyToGenerate.length > 0 && (
+              <Section
+                id="ready"
+                icon="⚡"
+                title="Ready to Generate"
+                count={readyToGenerate.length}
+                color="#0090DA"
+              >
+                <SubSection sectionId="ready" label="Diagnoses" codes={ready.diagnoses} />
+                <SubSection sectionId="ready" label="Procedures" codes={ready.procedures} />
+              </Section>
+            )}
 
-            {/* No Sources */}
-            <Section
-              id="noSources"
-              icon="○"
-              title="No Sources"
-              count={noSourcesCodes.length}
-              color="#9ca3af"
-            >
-              <SubSection sectionId="noSources" label="Diagnoses" codes={noSources.diagnoses} />
-              <SubSection sectionId="noSources" label="Procedures" codes={noSources.procedures} />
-            </Section>
+            {/* No Sources - only shown in 'all' mode */}
+            {viewFilter === 'all' && noSourcesCodes.length > 0 && (
+              <Section
+                id="noSources"
+                icon="○"
+                title="No Sources"
+                count={noSourcesCodes.length}
+                color="#9ca3af"
+              >
+                <SubSection sectionId="noSources" label="Diagnoses" codes={noSources.diagnoses} />
+                <SubSection sectionId="noSources" label="Procedures" codes={noSources.procedures} />
+              </Section>
+            )}
+
+            {/* Empty state for current filter */}
+            {viewFilter === 'generated' && generatedCodes.length === 0 && (
+              <div className="text-center py-8 text-gray-400 text-sm">No generated rules</div>
+            )}
+            {viewFilter === 'ready' && readyToGenerate.length === 0 && (
+              <div className="text-center py-8 text-gray-400 text-sm">No codes ready to generate</div>
+            )}
+            {viewFilter === 'actionable' && generatedCodes.length === 0 && readyToGenerate.length === 0 && (
+              <div className="text-center py-8 text-gray-400 text-sm">No codes with sources</div>
+            )}
           </>
         )}
       </div>
@@ -1844,27 +2092,53 @@ function parseSSELine(line) {
 // =============================================================================
 
 export default function ClaimRules() {
-  const { categories, total_codes, loading, refetch } = useCategories();
-  const [selectedCategory, setSelectedCategory] = useState(null);
-  const { diagnoses, procedures, loading: codesLoading, refetch: refetchCodes } = useCategoryCodesWithCMS(selectedCategory);
+  // Use new hierarchical categories
+  const { data: categoriesByType, loading, refetch } = useCategoriesByType();
+
+  // Selection state: code_type + meta_category
+  const [selectedCodeType, setSelectedCodeType] = useState(null);
+  const [selectedMetaCategory, setSelectedMetaCategory] = useState(null);
+
+  // For backwards compatibility with CodeList, combine into category name
+  const selectedCategory = selectedMetaCategory ? `${selectedCodeType}:${selectedMetaCategory}` : null;
+  const { diagnoses, procedures, loading: codesLoading, refetch: refetchCodes } = useCategoryCodesWithCMS(selectedMetaCategory, selectedCodeType);
 
   const [selectedCodes, setSelectedCodes] = useState(new Set());
   const [generating, setGenerating] = useState(false);
+  const [viewFilter, setViewFilter] = useState('actionable'); // 'actionable' | 'generated' | 'ready' | 'all'
 
-  // Auto-select first category when categories load
+  // Auto-select first category when data loads
   useEffect(() => {
-    if (!selectedCategory && categories.length > 0) {
-      setSelectedCategory(categories[0].name);
+    if (!selectedMetaCategory && Object.keys(categoriesByType).length > 0) {
+      // Find first code type with categories
+      for (const codeType of ['ICD-10', 'CPT', 'HCPCS']) {
+        const typeData = categoriesByType[codeType];
+        if (typeData?.categories?.length > 0) {
+          setSelectedCodeType(codeType);
+          setSelectedMetaCategory(typeData.categories[0].name);
+          break;
+        }
+      }
     }
-  }, [categories, selectedCategory]);
+  }, [categoriesByType, selectedMetaCategory]);
+
+  // Handle category selection
+  const handleSelectCategory = (codeType, metaCategory) => {
+    setSelectedCodeType(codeType);
+    setSelectedMetaCategory(metaCategory);
+    setSelectedCodes(new Set()); // Clear selection when changing category
+  };
 
   // Batch progress tracking (code -> progress)
   const [batchProgress, setBatchProgress] = useState({});
   const [showBatchProgress, setShowBatchProgress] = useState(false);
   const [viewingCode, setViewingCode] = useState(null);
 
-  const selectedCategoryInfo = categories.find(c => c.name === selectedCategory);
-  const categoryColor = selectedCategoryInfo?.color || '#6B7280';
+  // Get category info for display
+  const categoryInfo = selectedCodeType && selectedMetaCategory
+    ? categoriesByType[selectedCodeType]?.categories?.find(c => c.name === selectedMetaCategory)
+    : null;
+  const categoryColor = '#0d9488'; // teal for selected
 
   const handleToggleCode = (code) => {
     setSelectedCodes(prev => {
@@ -1892,8 +2166,8 @@ export default function ClaimRules() {
   };
 
   // Generate a single CMS rule with progress tracking
-  const generateSingleCMSRule = async (code, forceRegenerate = false) => {
-    console.log(`[CMS] Starting generation for: ${code}`, forceRegenerate ? '(force)' : '');
+  const generateSingleCMSRule = async (code, codeType, forceRegenerate = false) => {
+    console.log(`[CMS] Starting generation for: ${code} (${codeType})`, forceRegenerate ? '(force)' : '');
 
     // Mark as generating (preserve any existing data)
     setBatchProgress(prev => ({
@@ -1909,7 +2183,7 @@ export default function ClaimRules() {
       const response = await fetch(`${API_BASE}/generate-cms/${encodeURIComponent(code)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force_regenerate: forceRegenerate })
+        body: JSON.stringify({ code_type: codeType, force_regenerate: forceRegenerate })
       });
 
       if (!response.ok) {
@@ -2084,7 +2358,7 @@ export default function ClaimRules() {
   };
 
   // Generate CMS rules with parallel processing (concurrency limit)
-  const generateCMSRules = async (codes, concurrency = 5, forceRegenerate = false) => {
+  const generateCMSRules = async (codes, codeType, concurrency = 5, forceRegenerate = false) => {
     if (codes.length === 0) return;
 
     setGenerating(true);
@@ -2108,7 +2382,7 @@ export default function ClaimRules() {
         const index = currentIndex++;
         const code = codes[index];
         if (code) {
-          await generateSingleCMSRule(code, forceRegenerate);
+          await generateSingleCMSRule(code, codeType, forceRegenerate);
         }
       }
     };
@@ -2128,12 +2402,12 @@ export default function ClaimRules() {
   };
 
   const handleGenerateSingle = async (code, forceRegenerate = false) => {
-    await generateCMSRules([code], 5, forceRegenerate);
+    await generateCMSRules([code], selectedCodeType, 5, forceRegenerate);
   };
 
   const handleGenerateBatch = async () => {
     if (selectedCodes.size === 0) return;
-    await generateCMSRules(Array.from(selectedCodes));
+    await generateCMSRules(Array.from(selectedCodes), selectedCodeType);
   };
 
   return (
@@ -2150,34 +2424,60 @@ export default function ClaimRules() {
               CMS-1500 validation rules from Guidelines + NCCI
             </p>
           </div>
-          <button
-            onClick={() => { refetch(); if (selectedCategory) refetchCodes(); }}
-            className="p-2 hover:bg-gray-100 rounded-lg"
-            title="Refresh data"
-          >
-            <RefreshCw className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-3">
+            {/* View filters */}
+            <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+              {[
+                { key: 'actionable', label: 'With Sources' },
+                { key: 'generated', label: 'Generated' },
+                { key: 'ready', label: 'Ready' },
+                { key: 'all', label: 'All' },
+              ].map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setViewFilter(key)}
+                  className="px-3 py-1.5 text-xs font-medium rounded-md transition-colors"
+                  style={{
+                    background: viewFilter === key ? 'white' : 'transparent',
+                    color: viewFilter === key ? '#0369a1' : '#6b7280',
+                    boxShadow: viewFilter === key ? '0 1px 2px rgba(0,0,0,0.05)' : 'none',
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => { refetch(); if (selectedMetaCategory) refetchCodes(); }}
+              className="p-2 hover:bg-gray-100 rounded-lg"
+              title="Refresh data"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </div>
 
       {/* Content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Categories sidebar */}
-        <div className="w-72 border-r bg-gray-50 p-4 overflow-auto">
-          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-3">Categories</h3>
-          <CategoryList
-            categories={categories}
-            selectedCategory={selectedCategory}
-            onSelectCategory={setSelectedCategory}
+        <div className="w-80 border-r bg-gray-50 p-4 overflow-auto">
+          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-3">Code Hierarchy</h3>
+          <HierarchicalCategoryList
+            categoriesByType={categoriesByType}
+            selectedCodeType={selectedCodeType}
+            selectedMetaCategory={selectedMetaCategory}
+            onSelectCategory={handleSelectCategory}
             loading={loading}
+            viewFilter={viewFilter}
           />
         </div>
 
         {/* Codes panel */}
         <div className="flex-1 overflow-hidden">
-          {selectedCategory ? (
+          {selectedMetaCategory ? (
             <CodeList
-              categoryName={selectedCategory}
+              categoryName={`${selectedMetaCategory} (${selectedCodeType})`}
               categoryColor={categoryColor}
               diagnoses={diagnoses}
               procedures={procedures}
@@ -2189,6 +2489,7 @@ export default function ClaimRules() {
               onGenerateSingle={handleGenerateSingle}
               onViewRule={setViewingCode}
               generating={generating}
+              viewFilter={viewFilter}
             />
           ) : (
             <div className="h-full flex items-center justify-center text-gray-400">

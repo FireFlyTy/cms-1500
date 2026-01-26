@@ -209,8 +209,9 @@ class CMSRuleGenerator:
 
             # Check if we have anything to process
             if not guideline_rule and (not ncci_edits or (not ncci_edits.ptp_edits and ncci_edits.mue_value is None)):
-                yield self._event("pipeline", "error",
-                    f"No sources found for {code}: no guideline rule and no NCCI edits"
+                # For CPT/HCPCS parent patterns without data, emit skip event (not error)
+                yield self._event("pipeline", "skip",
+                    f"No sources for {code}: no guideline and no NCCI - marking as pass-through"
                 ).to_json()
                 return
 

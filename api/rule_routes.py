@@ -110,10 +110,36 @@ def _scan_rules_directory() -> dict:
                 elif '.%' in pattern:
                     pattern = pattern.replace('.%', '%')
 
+            # Read code_type from rule file
+            code_type = None
+            # Try CMS rule first (has code_type)
+            if cms_versions:
+                latest_cms = sorted(cms_versions, key=lambda x: int(x[1:]))[-1]
+                cms_rule_path = os.path.join(cms_path, latest_cms, "cms_rule.json")
+                if os.path.exists(cms_rule_path):
+                    try:
+                        with open(cms_rule_path, 'r') as f:
+                            rule_data = json.load(f)
+                            code_type = rule_data.get('code_type')
+                    except:
+                        pass
+            # Try guideline rule if no code_type yet
+            if not code_type and guideline_versions:
+                latest_gl = sorted(guideline_versions, key=lambda x: int(x[1:]))[-1]
+                gl_rule_path = os.path.join(code_path, latest_gl, "rule.json")
+                if os.path.exists(gl_rule_path):
+                    try:
+                        with open(gl_rule_path, 'r') as f:
+                            rule_data = json.load(f)
+                            code_type = rule_data.get('code_type')
+                    except:
+                        pass
+
             cache[pattern.upper()] = {
                 'guideline_versions': sorted(guideline_versions, key=lambda x: int(x[1:])) if guideline_versions else [],
                 'cms_versions': sorted(cms_versions, key=lambda x: int(x[1:])) if cms_versions else [],
-                'path': code_path
+                'path': code_path,
+                'code_type': code_type
             }
 
     return cache
@@ -638,6 +664,305 @@ async def get_categories(rule_type: Optional[str] = "guideline"):
         'categories': categories,
         'total_codes': len(all_codes),
         'total_with_rules': sum(c['codes_with_rules'] for c in categories)
+    }
+
+
+@router.get("/categories-by-type")
+async def get_categories_by_code_type(rule_type: Optional[str] = "cms"):
+    """
+    Получает категории сгруппированные по code_type (ICD-10, CPT, HCPCS).
+    Использует meta_category из code_hierarchy.
+
+    Returns:
+        {
+            "ICD-10": {
+                "total_codes": 100,
+                "codes_with_rules": 20,
+                "categories": [
+                    {"name": "E", "description": "Endocrine...", "total": 30, "with_rules": 10},
+                    ...
+                ]
+            },
+            ...
+        }
+    """
+    from src.parsers.document_parser import load_meta_categories_from_json
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Get all codes with meta_category from code_hierarchy
+    cursor.execute("""
+        SELECT
+            ch.code_type,
+            ch.meta_category,
+            ch.pattern,
+            ch.level,
+            ch.description
+        FROM code_hierarchy ch
+        WHERE ch.level >= 2
+        ORDER BY ch.code_type, ch.meta_category, ch.pattern
+    """)
+    hierarchy_rows = cursor.fetchall()
+
+    # Get rules status (status can be 'ready' or 'active')
+    cursor.execute("""
+        SELECT pattern, code_type, rule_type, status
+        FROM rules_hierarchy
+        WHERE status IN ('active', 'ready')
+    """)
+    rules_rows = cursor.fetchall()
+
+    # Get NCCI codes (for CPT/HCPCS sources)
+    cursor.execute("SELECT DISTINCT code FROM ncci_mue_pra WHERE mue_value IS NOT NULL")
+    ncci_mue = set(row[0] for row in cursor.fetchall())
+    cursor.execute("SELECT DISTINCT column1 FROM ncci_ptp UNION SELECT DISTINCT column2 FROM ncci_ptp")
+    ncci_ptp = set(row[0] for row in cursor.fetchall())
+    ncci_codes = ncci_mue | ncci_ptp
+
+    conn.close()
+
+    # Get rules from filesystem cache too
+    rules_cache = _get_rules_cache()
+
+    # Build rules lookup from DB
+    # Note: rule_type in DB is 'cms1500' or 'guideline', normalize for API
+    rules_lookup = {}
+    for pattern, code_type, r_type, status in rules_rows:
+        key = f"{pattern}:{code_type}"
+        if key not in rules_lookup:
+            rules_lookup[key] = {}
+        # Normalize: cms1500 -> cms
+        normalized_type = 'cms' if r_type == 'cms1500' else r_type
+        rules_lookup[key][normalized_type] = True
+
+    # Add rules from filesystem - use code_type from rule file
+    for pattern, file_info in rules_cache.items():
+        fs_code_type = file_info.get('code_type')
+        if fs_code_type:
+            key = f"{pattern}:{fs_code_type}"
+            if key not in rules_lookup:
+                rules_lookup[key] = {}
+            if file_info.get('guideline_versions'):
+                rules_lookup[key]['guideline'] = True
+            if file_info.get('cms_versions'):
+                rules_lookup[key]['cms'] = True
+
+    # Load meta_categories for descriptions
+    meta_cats = load_meta_categories_from_json()
+
+    # Group by code_type -> meta_category
+    result = {}
+
+    for code_type, meta_cat, pattern, level, description in hierarchy_rows:
+        if not meta_cat:
+            continue
+
+        if code_type not in result:
+            result[code_type] = {
+                "total_codes": 0,
+                "codes_with_rules": 0,
+                "codes_with_sources": 0,
+                "codes_ready": 0,
+                "categories": {}
+            }
+
+        if meta_cat not in result[code_type]["categories"]:
+            # Get description from meta_categories.json
+            mc_key = code_type if code_type != "ICD-10" else "ICD-10"
+            cat_info = meta_cats.get(mc_key, {}).get("categories", {}).get(meta_cat, {})
+            cat_description = cat_info.get("name", description or meta_cat)
+
+            result[code_type]["categories"][meta_cat] = {
+                "name": meta_cat,
+                "description": cat_description,
+                "total": 0,
+                "with_rules": 0,
+                "with_sources": 0,
+                "ready": 0
+            }
+
+        # Count codes (level 2+ are actual codes, level 1 is meta-category)
+        result[code_type]["total_codes"] += 1
+        result[code_type]["categories"][meta_cat]["total"] += 1
+
+        # Check if has rule and sources
+        key = f"{pattern}:{code_type}"
+        rule_info = rules_lookup.get(key, {})
+        has_rule = rule_info.get(rule_type if rule_type else "cms", False)
+        has_guideline = rule_info.get('guideline', False)
+        has_ncci = pattern in ncci_codes if code_type in ('CPT', 'HCPCS') else False
+        has_sources = has_guideline or has_ncci
+
+        if has_rule:
+            result[code_type]["codes_with_rules"] += 1
+            result[code_type]["categories"][meta_cat]["with_rules"] += 1
+
+        if has_sources:
+            result[code_type]["codes_with_sources"] += 1
+            result[code_type]["categories"][meta_cat]["with_sources"] += 1
+            if not has_rule:
+                result[code_type]["codes_ready"] += 1
+                result[code_type]["categories"][meta_cat]["ready"] += 1
+
+    # Convert categories dict to sorted list
+    for code_type in result:
+        cats_dict = result[code_type]["categories"]
+        cats_list = sorted(cats_dict.values(), key=lambda x: x["name"])
+        result[code_type]["categories"] = cats_list
+
+    return result
+
+
+@router.get("/codes-by-meta/{code_type}/{meta_category}")
+async def get_codes_by_meta_category(code_type: str, meta_category: str):
+    """
+    Получает коды для конкретной meta_category (E, F, I, J, 9, etc.)
+
+    Args:
+        code_type: ICD-10, CPT, HCPCS
+        meta_category: E, F, I (for ICD-10) or J, A (for HCPCS) etc.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Get codes from code_hierarchy
+    cursor.execute("""
+        SELECT
+            ch.pattern,
+            ch.code_type,
+            ch.level,
+            ch.description,
+            ch.meta_category
+        FROM code_hierarchy ch
+        WHERE ch.code_type = ? AND ch.meta_category = ? AND ch.level >= 2
+        ORDER BY ch.pattern
+    """, (code_type, meta_category))
+    hierarchy_rows = cursor.fetchall()
+
+    # Get rules status (status can be 'ready' or 'active') with path for version
+    cursor.execute("""
+        SELECT rh.pattern, rh.code_type, rh.rule_type, rh.rule_id, rh.status, r.rule_path
+        FROM rules_hierarchy rh
+        LEFT JOIN rules r ON rh.rule_id = r.id
+        WHERE rh.code_type = ? AND rh.status IN ('active', 'ready')
+    """, (code_type,))
+    rules_rows = cursor.fetchall()
+
+    # Get documents linked to codes
+    cursor.execute("""
+        SELECT dc.code_pattern, dc.document_id, d.filename
+        FROM document_codes dc
+        JOIN documents d ON dc.document_id = d.file_hash
+        WHERE dc.code_type = ? AND d.parsed_at IS NOT NULL
+    """, (code_type,))
+    doc_rows = cursor.fetchall()
+    conn.close()
+
+    # Get rules from filesystem cache too
+    rules_cache = _get_rules_cache()
+
+    # Build lookups from DB
+    # Note: rule_type in DB is 'cms1500' or 'guideline', normalize for consistency
+    rules_lookup = {}
+    for pattern, c_type, r_type, rule_id, status, rule_path in rules_rows:
+        if pattern not in rules_lookup:
+            rules_lookup[pattern] = {}
+        # Extract version from rule_path (e.g., .../v1 -> 1)
+        version = None
+        if rule_path:
+            ver_dir = os.path.basename(rule_path)
+            if ver_dir.startswith('v') and ver_dir[1:].isdigit():
+                version = int(ver_dir[1:])
+        # Normalize: cms1500 -> cms
+        normalized_type = 'cms' if r_type == 'cms1500' else r_type
+        rules_lookup[pattern][normalized_type] = {'rule_id': rule_id, 'status': status, 'version': version}
+
+    # Add rules from filesystem - use code_type from rule file
+    for fs_pattern, file_info in rules_cache.items():
+        fs_code_type = file_info.get('code_type')
+        if fs_code_type == code_type:
+            if fs_pattern not in rules_lookup:
+                rules_lookup[fs_pattern] = {}
+            if file_info.get('guideline_versions'):
+                if 'guideline' not in rules_lookup[fs_pattern]:
+                    versions = file_info['guideline_versions']
+                    rules_lookup[fs_pattern]['guideline'] = {'rule_id': None, 'version': int(versions[-1][1:]) if versions else 1}
+            if file_info.get('cms_versions'):
+                if 'cms' not in rules_lookup[fs_pattern]:
+                    versions = file_info['cms_versions']
+                    rules_lookup[fs_pattern]['cms'] = {'rule_id': None, 'version': int(versions[-1][1:]) if versions else 1}
+
+    docs_lookup = {}
+    for pattern, doc_id, filename in doc_rows:
+        if pattern not in docs_lookup:
+            docs_lookup[pattern] = []
+        docs_lookup[pattern].append({'id': doc_id, 'filename': filename})
+
+    # For CPT/HCPCS: get NCCI data availability
+    ncci_lookup = {}
+    if code_type in ('CPT', 'HCPCS'):
+        conn2 = get_db_connection()
+        cursor2 = conn2.cursor()
+        # Get all patterns that have MUE data
+        cursor2.execute("SELECT code FROM ncci_mue_pra WHERE mue_value IS NOT NULL")
+        for row in cursor2.fetchall():
+            ncci_lookup[row[0]] = {'has_mue': True}
+        # Get all patterns that have PTP data
+        cursor2.execute("SELECT DISTINCT column1 FROM ncci_ptp")
+        for row in cursor2.fetchall():
+            if row[0] not in ncci_lookup:
+                ncci_lookup[row[0]] = {}
+            ncci_lookup[row[0]]['has_ptp'] = True
+        cursor2.execute("SELECT DISTINCT column2 FROM ncci_ptp")
+        for row in cursor2.fetchall():
+            if row[0] not in ncci_lookup:
+                ncci_lookup[row[0]] = {}
+            ncci_lookup[row[0]]['has_ptp'] = True
+        conn2.close()
+
+    # Build result
+    diagnoses = []
+    procedures = []
+
+    for pattern, c_type, level, description, meta_cat in hierarchy_rows:
+        rule_info = rules_lookup.get(pattern, {})
+        docs = docs_lookup.get(pattern, [])
+        ncci_info = ncci_lookup.get(pattern, {})
+
+        # Check parent rules for inheritance indicator
+        has_guideline = 'guideline' in rule_info
+        has_cms = 'cms' in rule_info
+        has_ncci = bool(ncci_info.get('has_mue') or ncci_info.get('has_ptp'))
+
+        code_data = {
+            'code': pattern,
+            'type': c_type,
+            'description': description,
+            'level': level,
+            'documents': docs,
+            'has_ncci': has_ncci,
+            'rule_status': {
+                'has_rule': has_guideline,
+                'has_cms1500': has_cms,
+                'guideline_rule_id': rule_info.get('guideline', {}).get('rule_id'),
+                'cms1500_rule_id': rule_info.get('cms', {}).get('rule_id'),
+                'guideline_version': rule_info.get('guideline', {}).get('version'),
+                'cms_version': rule_info.get('cms', {}).get('version'),
+            }
+        }
+
+        if c_type == 'ICD-10':
+            diagnoses.append(code_data)
+        else:
+            procedures.append(code_data)
+
+    return {
+        'code_type': code_type,
+        'meta_category': meta_category,
+        'diagnoses': diagnoses,
+        'procedures': procedures,
+        'total': len(diagnoses) + len(procedures)
     }
 
 

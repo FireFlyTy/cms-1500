@@ -505,7 +505,8 @@ class HierarchyRuleGenerator:
         """
         Plan CMS-1500 generation.
 
-        Prerequisite: Guideline rule must exist for EXACT code.
+        For ICD-10 (diagnoses): Guideline rule must exist for EXACT code.
+        For CPT/HCPCS (procedures): No guideline required - uses NCCI edits.
         Then generate CMS-1500 for entire chain top-down.
         """
         # Use hierarchy from DB
@@ -513,18 +514,20 @@ class HierarchyRuleGenerator:
         if not patterns:
             patterns = get_hierarchy_patterns(code, code_type)
 
-        # Check prerequisite: guideline for exact code (covered = has_own OR same_as_parent)
-        guideline_covered, _ = self.is_pattern_covered(code, "guideline", code_type)
+        # Check prerequisite: guideline for exact code (only for ICD-10)
+        # CPT/HCPCS use NCCI edits instead of guideline rules
+        if code_type == "ICD-10":
+            guideline_covered, _ = self.is_pattern_covered(code, "guideline", code_type)
 
-        if not guideline_covered:
-            return GenerationPlan(
-                target_code=code,
-                rule_type="cms1500",
-                patterns_to_generate=[],
-                existing_patterns=[],
-                prerequisite_met=False,
-                prerequisite_error=f"Guideline rule required for {code} before generating CMS-1500"
-            )
+            if not guideline_covered:
+                return GenerationPlan(
+                    target_code=code,
+                    rule_type="cms1500",
+                    patterns_to_generate=[],
+                    existing_patterns=[],
+                    prerequisite_met=False,
+                    prerequisite_error=f"Guideline rule required for {code} before generating CMS-1500"
+                )
 
         # Check which levels have cms1500 rules (covered = has_own OR same_as_parent)
         existing = []
@@ -985,6 +988,24 @@ class HierarchyRuleGenerator:
             }, ensure_ascii=False)
             return
 
+        # For CPT/HCPCS: check if we have any source (NCCI or guideline)
+        if code_type in ("CPT", "HCPCS"):
+            from .cms_generator import CMSRuleGenerator
+            cms_check = CMSRuleGenerator()
+            ncci = cms_check._fetch_ncci_edits(code)
+            has_ncci = ncci and (ncci.ptp_edits or ncci.mue_value is not None)
+            guideline_covered, _ = self.is_pattern_covered(code, "guideline", code_type)
+
+            if not has_ncci and not guideline_covered:
+                yield json.dumps({
+                    "step": "cms1500",
+                    "type": "error",
+                    "content": f"No sources for {code}. Need either NCCI edits or guideline rule.",
+                    "code": code,
+                    "code_type": code_type
+                }, ensure_ascii=False)
+                return
+
         # If force_regenerate, add target code to patterns_to_generate
         if force_regenerate and code not in plan.patterns_to_generate:
             plan.patterns_to_generate.append(code)
@@ -1239,6 +1260,7 @@ class HierarchyRuleGenerator:
                     else:
                         parent_cms1500_content = str(content)
 
+            skipped = False
             async for event_json in cms_gen.stream_pipeline(
                 code=pattern,
                 code_type=code_type,
@@ -1246,15 +1268,30 @@ class HierarchyRuleGenerator:
             ):
                 yield event_json
 
-                # Capture save_path from pipeline done event
+                # Capture save_path from pipeline done event or skip
                 try:
                     event = json.loads(event_json)
-                    if event.get("step") == "pipeline" and event.get("type") == "done":
-                        content = event.get("content", "")
-                        if "Saved to " in content:
-                            save_path = content.split("Saved to ")[-1]
+                    if event.get("step") == "pipeline":
+                        if event.get("type") == "done":
+                            content = event.get("content", "")
+                            if "Saved to " in content:
+                                save_path = content.split("Saved to ")[-1]
+                        elif event.get("type") == "skip":
+                            # No data for this pattern - mark as same_as_parent
+                            skipped = True
                 except:
                     pass
+
+            # Handle skipped patterns (no guideline, no NCCI)
+            if skipped:
+                self.register_same_as_parent(pattern, rule_type, code_type)
+                yield json.dumps({
+                    "step": rule_type,
+                    "type": "skipped",
+                    "content": f"No data for {pattern} - marked as pass-through",
+                    "pattern": pattern
+                }, ensure_ascii=False)
+                return
 
         # Insert into rules table (guideline only - CMS-1500 already saves via CMSRuleGenerator)
         conn = self._get_conn()
