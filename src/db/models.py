@@ -228,7 +228,8 @@ CREATE TABLE IF NOT EXISTS rules_hierarchy (
     rule_id INTEGER,                   -- FK to rules table (NULL if same_as_parent)
     has_own_rule INTEGER DEFAULT 0,    -- 1 if this pattern has its own generated rule
     inherits_from TEXT,                -- Pattern from which rule is inherited (for same_as_parent)
-    status TEXT DEFAULT 'pending',     -- 'pending', 'ready', 'same_as_parent', 'failed'
+    status TEXT DEFAULT 'pending',     -- 'pending', 'generating', 'ready', 'same_as_parent', 'failed'
+    claimed_at TIMESTAMP,              -- When generation started (for timeout detection)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(code_type, pattern, rule_type),
     FOREIGN KEY (rule_id) REFERENCES rules(id)
@@ -276,3 +277,176 @@ def get_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def migrate_db(conn: sqlite3.Connection) -> None:
+    """Run migrations for existing databases."""
+    cursor = conn.cursor()
+
+    # Check if claimed_at column exists in rules_hierarchy
+    cursor.execute("PRAGMA table_info(rules_hierarchy)")
+    columns = [row[1] for row in cursor.fetchall()]
+
+    if 'claimed_at' not in columns:
+        cursor.execute("ALTER TABLE rules_hierarchy ADD COLUMN claimed_at TIMESTAMP")
+        conn.commit()
+
+
+# ============================================================
+# GENERATION LOCK (Race condition prevention)
+# ============================================================
+
+GENERATION_TIMEOUT_MINUTES = 10
+
+
+def try_claim_generation(
+    conn: sqlite3.Connection,
+    pattern: str,
+    rule_type: str,
+    code_type: str
+) -> str:
+    """
+    Try to claim generation lock for a pattern.
+    Uses BEGIN IMMEDIATE for atomic check-and-claim.
+    Works for both 'guideline' and 'cms1500' rule types.
+
+    Args:
+        conn: Database connection
+        pattern: Code pattern (E11, E11.65, etc.)
+        rule_type: 'guideline' or 'cms1500'
+        code_type: 'ICD-10', 'CPT', 'HCPCS'
+
+    Returns:
+        'claimed' - We got the lock, proceed with generation
+        'exists' - Rule already exists (status='ready'), skip
+        'wait' - Someone else is generating, wait and retry
+    """
+    from datetime import datetime, timedelta
+
+    cursor = conn.cursor()
+
+    # Use IMMEDIATE transaction for write lock
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        cursor.execute("""
+            SELECT status, claimed_at FROM rules_hierarchy
+            WHERE pattern = ? AND rule_type = ? AND code_type = ?
+        """, (pattern.upper(), rule_type, code_type))
+        row = cursor.fetchone()
+
+        if row:
+            status = row[0]
+            claimed_at_str = row[1]
+
+            # Already has a ready rule
+            if status in ('ready', 'active'):
+                conn.commit()
+                return 'exists'
+
+            # Someone is generating
+            if status == 'generating':
+                # Check for timeout (stale lock)
+                if claimed_at_str:
+                    try:
+                        claimed_at = datetime.fromisoformat(claimed_at_str)
+                        if datetime.now() - claimed_at > timedelta(minutes=GENERATION_TIMEOUT_MINUTES):
+                            # Stale lock - take over
+                            cursor.execute("""
+                                UPDATE rules_hierarchy
+                                SET status = 'generating', claimed_at = ?
+                                WHERE pattern = ? AND rule_type = ? AND code_type = ?
+                            """, (datetime.now().isoformat(), pattern.upper(), rule_type, code_type))
+                            conn.commit()
+                            return 'claimed'
+                    except:
+                        pass
+
+                conn.commit()
+                return 'wait'
+
+            # Other status (pending, failed, same_as_parent) - claim it
+            cursor.execute("""
+                UPDATE rules_hierarchy
+                SET status = 'generating', claimed_at = ?
+                WHERE pattern = ? AND rule_type = ? AND code_type = ?
+            """, (datetime.now().isoformat(), pattern.upper(), rule_type, code_type))
+            conn.commit()
+            return 'claimed'
+
+        # No row exists - insert new with 'generating' status
+        pattern_type = _get_pattern_type_simple(pattern, code_type)
+        cursor.execute("""
+            INSERT INTO rules_hierarchy
+            (pattern, pattern_type, code_type, rule_type, status, claimed_at)
+            VALUES (?, ?, ?, ?, 'generating', ?)
+        """, (pattern.upper(), pattern_type, code_type, rule_type, datetime.now().isoformat()))
+        conn.commit()
+        return 'claimed'
+
+    except Exception as e:
+        conn.rollback()
+        raise
+
+
+def release_generation_lock(
+    conn: sqlite3.Connection,
+    pattern: str,
+    rule_type: str,
+    code_type: str,
+    success: bool = False
+) -> None:
+    """
+    Release generation lock after completion or failure.
+    Works for both 'guideline' and 'cms1500' rule types.
+
+    Args:
+        conn: Database connection
+        pattern: Code pattern
+        rule_type: 'guideline' or 'cms1500'
+        code_type: 'ICD-10', 'CPT', 'HCPCS'
+        success: True if generation succeeded (register_rule will set 'ready')
+                 False if generation failed (reset to 'pending' for retry)
+    """
+    cursor = conn.cursor()
+
+    if success:
+        # Clear claimed_at, status will be set by register_rule()
+        cursor.execute("""
+            UPDATE rules_hierarchy
+            SET claimed_at = NULL
+            WHERE pattern = ? AND rule_type = ? AND code_type = ? AND status = 'generating'
+        """, (pattern.upper(), rule_type, code_type))
+    else:
+        # Failed - reset to pending for retry
+        cursor.execute("""
+            UPDATE rules_hierarchy
+            SET status = 'pending', claimed_at = NULL
+            WHERE pattern = ? AND rule_type = ? AND code_type = ? AND status = 'generating'
+        """, (pattern.upper(), rule_type, code_type))
+
+    conn.commit()
+
+
+def _get_pattern_type_simple(pattern: str, code_type: str) -> str:
+    """Simple pattern type detection for lock insertion."""
+    if not pattern:
+        return "unknown"
+    if len(pattern) == 1:
+        return "meta_category"
+    if code_type == "ICD-10":
+        if '.' not in pattern:
+            return "category"
+        parts = pattern.split('.')
+        suffix_len = len(parts[1]) if len(parts) > 1 else 0
+        if suffix_len == 1:
+            return "subcategory"
+        elif suffix_len >= 2:
+            return "code"
+        return "category"
+    else:
+        if len(pattern) <= 2:
+            return "category"
+        elif len(pattern) <= 4:
+            return "subcategory"
+        else:
+            return "code"

@@ -688,13 +688,20 @@ class CMSRuleGenerator:
     ) -> CMSPipelineResult:
         """Build full pipeline result."""
         version = self._get_next_cms_version(code)
+        created_at = datetime.utcnow().isoformat() + "Z"
 
         # Parse JSON result
         final_json = None
         parse_result = self._results.get("parse")
+
         if parse_result:
             try:
                 final_json = json.loads(parse_result.output)
+                # Override LLM-generated metadata with correct values
+                final_json["code"] = code
+                final_json["code_type"] = code_type
+                final_json["version"] = version
+                final_json["generated_at"] = created_at
             except:
                 pass
 
@@ -702,7 +709,7 @@ class CMSRuleGenerator:
             code=code,
             code_type=code_type,
             version=version,
-            created_at=datetime.utcnow().isoformat() + "Z",
+            created_at=created_at,
             guideline_source=guideline_meta,
             ncci_edits=asdict(ncci_edits) if ncci_edits else None,
             steps=self._results,

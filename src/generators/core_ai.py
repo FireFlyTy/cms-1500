@@ -51,13 +51,13 @@ PIPELINE_MODELS_OPENAI = {
     "finalization": {"model": "gpt-4.1-mini", "reasoning_effort": None},
 }
 
-# Hybrid variant - Gemini for generation, gpt-5.2 for all validation
+# Hybrid variant - Gemini 3 Flash for generation, gpt-5.2 for all validation
 PIPELINE_MODELS_HYBRID = {
-    "draft":        {"provider": "gemini", "model": "gemini-2.5-flash-lite", "thinking_budget": 0},
+    "draft":        {"provider": "gemini", "model": "gemini-3-flash-preview", "thinking_budget": 8000},
     "mentor":       {"provider": "openai", "model": "gpt-5.2", "reasoning_effort": "low"},
     "redteam":      {"provider": "openai", "model": "gpt-5.2", "reasoning_effort": "low"},
     "arbitration":  {"provider": "openai", "model": "gpt-5.2", "reasoning_effort": "low"},
-    "finalization": {"provider": "gemini", "model": "gemini-2.5-flash-lite", "thinking_budget": 0},
+    "finalization": {"provider": "gemini", "model": "gemini-3-flash-preview", "thinking_budget": 0},
 }
 
 # Models that support reasoning_effort parameter

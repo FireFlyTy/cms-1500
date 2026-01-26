@@ -40,9 +40,136 @@ from typing import List, Dict, Optional, Tuple, AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime
 
+import re
 from .rule_generator import RuleGenerator, PipelineResult
 from .context_builder import build_sources_context, SourcesContext, SourceDocument
 from src.db.connection import get_db_connection
+from src.db.models import try_claim_generation, release_generation_lock, migrate_db
+
+
+def extract_guideline_for_inheritance(content: str) -> str:
+    """
+    Extract relevant sections from guideline rule for inheritance context.
+
+    Extracts: ## 3. INSTRUCTIONS through ## 4. REFERENCE (inclusive)
+    Excludes: SUMMARY, CRITERIA (too verbose), TRACEABILITY LOG, etc.
+
+    Args:
+        content: Full markdown content from rule.json
+
+    Returns:
+        Extracted sections or original content if parsing fails
+    """
+    if not content:
+        return ""
+
+    # Try to find INSTRUCTIONS section
+    instructions_match = re.search(
+        r'(##\s*3\.?\s*INSTRUCTIONS.*?)(?=##\s*(?:TRACEABILITY|UNUSED|CITATION|SELF-CHECK|CHANGE|STATUS)|$)',
+        content,
+        re.DOTALL | re.IGNORECASE
+    )
+
+    if instructions_match:
+        extracted = instructions_match.group(1).strip()
+        # Also try to include REFERENCE if it's before INSTRUCTIONS end marker
+        reference_match = re.search(
+            r'(##\s*4\.?\s*REFERENCE.*?)(?=##\s*(?:TRACEABILITY|UNUSED|CITATION|SELF-CHECK|CHANGE|STATUS)|$)',
+            content,
+            re.DOTALL | re.IGNORECASE
+        )
+        if reference_match:
+            extracted = instructions_match.group(1).strip() + "\n\n" + reference_match.group(1).strip()
+        return extracted
+
+    # Fallback: try to extract just CRITERIA if INSTRUCTIONS not found
+    criteria_match = re.search(
+        r'(##\s*2\.?\s*CRITERIA.*?)(?=##\s*3\.?\s*INSTRUCTIONS|##\s*TRACEABILITY|$)',
+        content,
+        re.DOTALL | re.IGNORECASE
+    )
+    if criteria_match:
+        return criteria_match.group(1).strip()
+
+    # Last resort: return full content as-is
+    return content
+
+
+def format_cms_rules_for_inheritance(cms_json: dict) -> str:
+    """
+    Format CMS rule JSON for inheritance context.
+
+    Extracts validatable_rules and formats as structured list.
+
+    Args:
+        cms_json: Parsed cms_rule.json content
+
+    Returns:
+        Formatted string with rules list
+    """
+    if not cms_json:
+        return ""
+
+    lines = []
+    lines.append(f"Code: {cms_json.get('code', 'unknown')}")
+    lines.append(f"Code Type: {cms_json.get('code_type', 'unknown')}")
+    lines.append("")
+
+    # Sources summary
+    sources = cms_json.get('sources', {})
+    if sources.get('guideline', {}).get('used'):
+        lines.append(f"Guideline: v{sources['guideline'].get('version', '?')}")
+    if sources.get('ncci_mue', {}).get('used'):
+        mue = sources['ncci_mue']
+        lines.append(f"NCCI MUE: max {mue.get('value', '?')} units per {mue.get('per', 'DOS')}")
+    if sources.get('ncci_ptp', {}).get('used'):
+        lines.append(f"NCCI PTP: {sources['ncci_ptp'].get('count', 0)} edits")
+    lines.append("")
+
+    # Validatable rules - full content, no truncation
+    rules = cms_json.get('validatable_rules', [])
+    if rules:
+        lines.append(f"## VALIDATABLE RULES ({len(rules)})")
+        lines.append("")
+        for r in rules:
+            rule_id = r.get('id', 'unknown')
+            rule_type = r.get('type', 'unknown')
+            severity = r.get('severity', 'error')
+            title = r.get('title', '')
+            action = r.get('action', 'REJECT')
+            message = r.get('message', '')
+            field = r.get('field', '')
+            source = r.get('source', {})
+
+            lines.append(f"### {rule_id}")
+            if title:
+                lines.append(f"- **Title**: {title}")
+            lines.append(f"- **Type**: {rule_type}")
+            lines.append(f"- **Severity**: {severity}")
+            lines.append(f"- **Action**: {action}")
+            if field:
+                lines.append(f"- **Field**: {field}")
+
+            # Condition - full JSON
+            condition = r.get('condition', {})
+            if condition:
+                lines.append(f"- **Condition**: {json.dumps(condition, ensure_ascii=False)}")
+
+            if message:
+                lines.append(f"- **Message**: {message}")
+
+            # Source info
+            if source:
+                source_type = source.get('type', '')
+                citation = source.get('citation', '')
+                if source_type or citation:
+                    lines.append(f"- **Source**: {source_type} {citation}")
+
+            lines.append("")
+    else:
+        lines.append("No validatable rules.")
+
+    return "\n".join(lines)
 
 
 # ============================================================
@@ -232,10 +359,89 @@ class HierarchyRuleGenerator:
         self._conn = None
 
     def _get_conn(self):
-        """Get or create database connection."""
+        """Get or create database connection with migrations."""
         if self._conn is None:
             self._conn = get_db_connection()
+            # Run migrations for existing DBs
+            migrate_db(self._conn)
         return self._conn
+
+    # ============================================================
+    # GENERATION LOCK
+    # ============================================================
+
+    async def _try_claim_with_wait(
+        self,
+        pattern: str,
+        rule_type: str,
+        code_type: str,
+        max_wait_seconds: int = 300
+    ) -> str:
+        """
+        Try to claim generation lock with waiting for 'generating' status.
+
+        Args:
+            pattern: Code pattern
+            rule_type: 'guideline' or 'cms1500'
+            code_type: 'ICD-10', 'CPT', 'HCPCS'
+            max_wait_seconds: Max time to wait if another process is generating
+
+        Returns:
+            'claimed' - We got the lock
+            'exists' - Rule already exists, skip
+            'timeout' - Waited too long, give up
+        """
+        import asyncio
+
+        conn = self._get_conn()
+        wait_start = asyncio.get_event_loop().time()
+
+        while True:
+            result = try_claim_generation(conn, pattern, rule_type, code_type)
+
+            if result in ('claimed', 'exists'):
+                return result
+
+            if result == 'wait':
+                elapsed = asyncio.get_event_loop().time() - wait_start
+                if elapsed > max_wait_seconds:
+                    return 'timeout'
+
+                # Wait and retry
+                await asyncio.sleep(5)  # Check every 5 seconds
+                continue
+
+            return result
+
+    def _release_lock(
+        self,
+        pattern: str,
+        rule_type: str,
+        code_type: str,
+        success: bool
+    ) -> None:
+        """Release generation lock."""
+        conn = self._get_conn()
+        release_generation_lock(conn, pattern, rule_type, code_type, success)
+
+    def _reset_rule_status(
+        self,
+        pattern: str,
+        rule_type: str,
+        code_type: str
+    ) -> None:
+        """
+        Reset rule status to 'pending' to allow force regeneration.
+        Called when force_regenerate=True to bypass 'exists' lock result.
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE rules_hierarchy
+            SET status = 'pending', has_own_rule = 0, claimed_at = NULL
+            WHERE pattern = ? AND rule_type = ? AND code_type = ?
+        """, (pattern.upper(), rule_type, code_type))
+        conn.commit()
 
     # ============================================================
     # RULE LOOKUP
@@ -882,53 +1088,86 @@ class HierarchyRuleGenerator:
 
         # Step 2: Generate each level top-down with inheritance
         for pattern in plan.patterns_to_generate:
-            if not force_regenerate:
-                has, _ = self.has_rule(pattern, "guideline", code_type)
-                if has:
-                    yield json.dumps({
-                        "step": "guideline",
-                        "type": "skip",
-                        "content": f"Rule already exists for {pattern}"
-                    }, ensure_ascii=False)
-                    continue
+            # If force_regenerate and this is our target code, reset status first
+            if force_regenerate and pattern.upper() == code.upper():
+                self._reset_rule_status(pattern, "guideline", code_type)
 
-            # Get parent rule (will be None for meta-category)
-            parent_rule = self.get_parent_rule_content(pattern, "guideline", code_type)
+            # Try to claim generation lock (prevents race condition)
+            lock_result = await self._try_claim_with_wait(pattern, "guideline", code_type)
 
-            # Log parent rule status
-            parent_patterns = get_hierarchy_patterns(pattern, code_type)
-            if len(parent_patterns) > 1:
-                parent_pattern = parent_patterns[1]
-                if parent_rule and parent_rule.get("content"):
-                    yield json.dumps({
-                        "step": "guideline",
-                        "type": "status",
-                        "content": f"Found parent guideline rule from DB: {parent_pattern}"
-                    }, ensure_ascii=False)
-                else:
-                    yield json.dumps({
-                        "step": "guideline",
-                        "type": "status",
-                        "content": f"No parent guideline rule found for {parent_pattern}"
-                    }, ensure_ascii=False)
+            if lock_result == 'exists':
+                yield json.dumps({
+                    "step": "guideline",
+                    "type": "skip",
+                    "content": f"Rule already exists for {pattern} (created by another process)"
+                }, ensure_ascii=False)
+                continue
 
-            yield json.dumps({
-                "step": "guideline",
-                "type": "generating",
-                "content": f"Generating guideline for {pattern}",
-                "pattern": pattern,
-                "parent_rule": parent_rule["pattern"] if parent_rule else None
-            }, ensure_ascii=False)
+            if lock_result == 'timeout':
+                yield json.dumps({
+                    "step": "guideline",
+                    "type": "skip",
+                    "content": f"Timeout waiting for {pattern} generation by another process"
+                }, ensure_ascii=False)
+                continue
 
-            # Generate with parent rule context
-            async for event in self._generate_single_rule(
-                pattern=pattern,
-                rule_type="guideline",
-                code_type=code_type,
-                document_ids=document_ids,
-                parent_rule=parent_rule
-            ):
-                yield event
+            # We have the lock - proceed with generation
+            generation_success = False
+            try:
+                if not force_regenerate:
+                    has, _ = self.has_rule(pattern, "guideline", code_type)
+                    if has:
+                        yield json.dumps({
+                            "step": "guideline",
+                            "type": "skip",
+                            "content": f"Rule already exists for {pattern}"
+                        }, ensure_ascii=False)
+                        generation_success = True  # Not an error, just skip
+                        continue
+
+                # Get parent rule (will be None for meta-category)
+                parent_rule = self.get_parent_rule_content(pattern, "guideline", code_type)
+
+                # Log parent rule status
+                parent_patterns = get_hierarchy_patterns(pattern, code_type)
+                if len(parent_patterns) > 1:
+                    parent_pattern = parent_patterns[1]
+                    if parent_rule and parent_rule.get("content"):
+                        yield json.dumps({
+                            "step": "guideline",
+                            "type": "status",
+                            "content": f"Found parent guideline rule from DB: {parent_pattern}"
+                        }, ensure_ascii=False)
+                    else:
+                        yield json.dumps({
+                            "step": "guideline",
+                            "type": "status",
+                            "content": f"No parent guideline rule found for {parent_pattern}"
+                        }, ensure_ascii=False)
+
+                yield json.dumps({
+                    "step": "guideline",
+                    "type": "generating",
+                    "content": f"Generating guideline for {pattern}",
+                    "pattern": pattern,
+                    "parent_rule": parent_rule["pattern"] if parent_rule else None
+                }, ensure_ascii=False)
+
+                # Generate with parent rule context
+                async for event in self._generate_single_rule(
+                    pattern=pattern,
+                    rule_type="guideline",
+                    code_type=code_type,
+                    document_ids=document_ids,
+                    parent_rule=parent_rule
+                ):
+                    yield event
+
+                generation_success = True
+
+            finally:
+                # Always release lock
+                self._release_lock(pattern, "guideline", code_type, generation_success)
 
         yield json.dumps({
             "step": "guideline",
@@ -1034,91 +1273,124 @@ class HierarchyRuleGenerator:
 
         # Step 2: Generate each level top-down with inheritance
         for pattern in plan.patterns_to_generate:
-            if not force_regenerate:
-                has, _ = self.has_rule(pattern, "cms1500", code_type)
-                if has:
-                    yield json.dumps({
-                        "step": "cms1500",
-                        "type": "skip",
-                        "content": f"CMS-1500 rule already exists for {pattern}"
-                    }, ensure_ascii=False)
-                    continue
+            # If force_regenerate and this is our target code, reset status first
+            if force_regenerate and pattern.upper() == code.upper():
+                self._reset_rule_status(pattern, "cms1500", code_type)
 
-            # Get parent CMS-1500 rule - check cascade cache first
-            t1 = time.time()
-            parent_cms1500 = None
-            parent_patterns = get_hierarchy_patterns(pattern, code_type)
-            if len(parent_patterns) > 1:
-                parent_pattern = parent_patterns[1]
-                if parent_pattern in cascade_cache:
-                    # Use just-generated rule from this cascade
-                    parent_cms1500 = {
-                        "pattern": parent_pattern,
-                        "markdown": cascade_cache[parent_pattern],
-                        "content": None
-                    }
-                    yield json.dumps({
-                        "step": "cms1500",
-                        "type": "status",
-                        "content": f"Using just-generated parent rule from {parent_pattern}"
-                    }, ensure_ascii=False)
-                else:
-                    # Fall back to database lookup
-                    parent_cms1500 = self.get_parent_rule_content(pattern, "cms1500", code_type)
-                    if parent_cms1500 and parent_cms1500.get("markdown"):
+            # Try to claim generation lock (prevents race condition)
+            lock_result = await self._try_claim_with_wait(pattern, "cms1500", code_type)
+
+            if lock_result == 'exists':
+                yield json.dumps({
+                    "step": "cms1500",
+                    "type": "skip",
+                    "content": f"CMS-1500 rule already exists for {pattern} (created by another process)"
+                }, ensure_ascii=False)
+                continue
+
+            if lock_result == 'timeout':
+                yield json.dumps({
+                    "step": "cms1500",
+                    "type": "skip",
+                    "content": f"Timeout waiting for {pattern} generation by another process"
+                }, ensure_ascii=False)
+                continue
+
+            # We have the lock - proceed with generation
+            generation_success = False
+            generated_markdown = None
+            try:
+                if not force_regenerate:
+                    has, _ = self.has_rule(pattern, "cms1500", code_type)
+                    if has:
+                        yield json.dumps({
+                            "step": "cms1500",
+                            "type": "skip",
+                            "content": f"CMS-1500 rule already exists for {pattern}"
+                        }, ensure_ascii=False)
+                        generation_success = True
+                        continue
+
+                # Get parent CMS-1500 rule - check cascade cache first
+                t1 = time.time()
+                parent_cms1500 = None
+                parent_patterns = get_hierarchy_patterns(pattern, code_type)
+                if len(parent_patterns) > 1:
+                    parent_pattern = parent_patterns[1]
+                    if parent_pattern in cascade_cache:
+                        # Use just-generated rule from this cascade
+                        parent_cms1500 = {
+                            "pattern": parent_pattern,
+                            "markdown": cascade_cache[parent_pattern],
+                            "content": None
+                        }
                         yield json.dumps({
                             "step": "cms1500",
                             "type": "status",
-                            "content": f"Found parent CMS rule from DB: {parent_pattern} ({len(parent_cms1500['markdown'])} chars)"
+                            "content": f"Using just-generated parent rule from {parent_pattern}"
                         }, ensure_ascii=False)
                     else:
-                        yield json.dumps({
-                            "step": "cms1500",
-                            "type": "status",
-                            "content": f"No parent CMS rule found for {parent_pattern} in DB"
-                        }, ensure_ascii=False)
-            parent_lookup_time = (time.time() - t1) * 1000
+                        # Fall back to database lookup
+                        parent_cms1500 = self.get_parent_rule_content(pattern, "cms1500", code_type)
+                        if parent_cms1500 and parent_cms1500.get("markdown"):
+                            yield json.dumps({
+                                "step": "cms1500",
+                                "type": "status",
+                                "content": f"Found parent CMS rule from DB: {parent_pattern} ({len(parent_cms1500['markdown'])} chars)"
+                            }, ensure_ascii=False)
+                        else:
+                            yield json.dumps({
+                                "step": "cms1500",
+                                "type": "status",
+                                "content": f"No parent CMS rule found for {parent_pattern} in DB"
+                            }, ensure_ascii=False)
+                parent_lookup_time = (time.time() - t1) * 1000
 
-            # Get guideline for this pattern
-            t2 = time.time()
-            guideline = self.get_guideline_for_pattern(pattern, code_type)
-            guideline_lookup_time = (time.time() - t2) * 1000
+                # Get guideline for this pattern
+                t2 = time.time()
+                guideline = self.get_guideline_for_pattern(pattern, code_type)
+                guideline_lookup_time = (time.time() - t2) * 1000
 
-            yield json.dumps({
-                "step": "cms1500",
-                "type": "timing",
-                "content": f"Lookups: parent={parent_lookup_time:.0f}ms, guideline={guideline_lookup_time:.0f}ms"
-            }, ensure_ascii=False)
+                yield json.dumps({
+                    "step": "cms1500",
+                    "type": "timing",
+                    "content": f"Lookups: parent={parent_lookup_time:.0f}ms, guideline={guideline_lookup_time:.0f}ms"
+                }, ensure_ascii=False)
 
-            yield json.dumps({
-                "step": "cms1500",
-                "type": "generating",
-                "content": f"Generating CMS-1500 for {pattern}",
-                "pattern": pattern,
-                "parent_cms1500": parent_cms1500["pattern"] if parent_cms1500 else None,
-                "guideline": guideline["pattern"] if guideline else None
-            }, ensure_ascii=False)
+                yield json.dumps({
+                    "step": "cms1500",
+                    "type": "generating",
+                    "content": f"Generating CMS-1500 for {pattern}",
+                    "pattern": pattern,
+                    "parent_cms1500": parent_cms1500["pattern"] if parent_cms1500 else None,
+                    "guideline": guideline["pattern"] if guideline else None
+                }, ensure_ascii=False)
 
-            # Generate with parent CMS-1500 + guideline context
-            generated_markdown = None
-            async for event in self._generate_single_rule(
-                pattern=pattern,
-                rule_type="cms1500",
-                code_type=code_type,
-                document_ids=document_ids,
-                parent_rule=parent_cms1500,
-                guideline_rule=guideline
-            ):
-                yield event
-                # Capture the generated markdown for cascade cache
-                try:
-                    evt = json.loads(event)
-                    if evt.get("step") == "transform" and evt.get("type") == "done":
-                        generated_markdown = evt.get("full_text", "")
-                except:
-                    pass
+                # Generate with parent CMS-1500 + guideline context
+                async for event in self._generate_single_rule(
+                    pattern=pattern,
+                    rule_type="cms1500",
+                    code_type=code_type,
+                    document_ids=document_ids,
+                    parent_rule=parent_cms1500,
+                    guideline_rule=guideline
+                ):
+                    yield event
+                    # Capture the generated markdown for cascade cache
+                    try:
+                        evt = json.loads(event)
+                        if evt.get("step") == "transform" and evt.get("type") == "done":
+                            generated_markdown = evt.get("full_text", "")
+                    except:
+                        pass
 
-            # Store in cascade cache for child patterns
+                generation_success = True
+
+            finally:
+                # Always release lock
+                self._release_lock(pattern, "cms1500", code_type, generation_success)
+
+            # Store in cascade cache for child patterns (outside try/finally)
             if generated_markdown:
                 cascade_cache[pattern.upper()] = generated_markdown
 
@@ -1353,38 +1625,55 @@ class HierarchyRuleGenerator:
         Build inheritance context string for prompt.
 
         For GUIDELINE:
-            === PARENT RULE: E11 ===
-            [content of E11 guideline]
+            === PARENT GUIDELINE RULE: E11 ===
+            [INSTRUCTIONS + REFERENCE sections only]
 
         For CMS-1500:
             === PARENT CMS-1500 RULE: E11 ===
-            [content of E11 cms1500]
+            [formatted validatable_rules list]
 
             === GUIDELINE FOR E11.6 ===
-            [content of E11.6 guideline]
+            [INSTRUCTIONS + REFERENCE sections only]
         """
         parts = []
 
-        if parent_rule and parent_rule.get("content"):
-            content = parent_rule["content"]
-            if isinstance(content, dict):
-                content = content.get("content", str(content))
+        if parent_rule:
+            parent_pattern = parent_rule.get('pattern', 'unknown')
 
             if rule_type == "guideline":
-                parts.append(f"=== PARENT GUIDELINE RULE: {parent_rule['pattern']} ===")
+                # For guideline inheritance: extract INSTRUCTIONS + REFERENCE sections
+                content = parent_rule.get("content")
+                if isinstance(content, dict):
+                    content = content.get("content", "")
+                if content:
+                    extracted = extract_guideline_for_inheritance(str(content))
+                    parts.append(f"=== PARENT GUIDELINE RULE: {parent_pattern} ===")
+                    parts.append(extracted)
+                    parts.append("")
             else:
-                parts.append(f"=== PARENT CMS-1500 RULE: {parent_rule['pattern']} ===")
-            parts.append(str(content))
-            parts.append("")
+                # For CMS-1500 inheritance: format validatable_rules from JSON
+                cms_json = parent_rule.get("content")
+                if isinstance(cms_json, dict) and "validatable_rules" in cms_json:
+                    formatted = format_cms_rules_for_inheritance(cms_json)
+                    parts.append(f"=== PARENT CMS-1500 RULE: {parent_pattern} ===")
+                    parts.append(formatted)
+                    parts.append("")
+                elif parent_rule.get("markdown"):
+                    # Fallback to markdown if no JSON
+                    parts.append(f"=== PARENT CMS-1500 RULE: {parent_pattern} ===")
+                    parts.append(parent_rule["markdown"])
+                    parts.append("")
 
         if guideline_rule and guideline_rule.get("content"):
+            # For guideline context in CMS generation: also extract key sections
             content = guideline_rule["content"]
             if isinstance(content, dict):
-                content = content.get("content", str(content))
-
-            parts.append(f"=== GUIDELINE FOR {pattern} ===")
-            parts.append(str(content))
-            parts.append("")
+                content = content.get("content", "")
+            if content:
+                extracted = extract_guideline_for_inheritance(str(content))
+                parts.append(f"=== GUIDELINE FOR {pattern} ===")
+                parts.append(extracted)
+                parts.append("")
 
         return "\n".join(parts) if parts else None
 
