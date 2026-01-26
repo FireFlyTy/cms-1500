@@ -720,6 +720,17 @@ async def get_categories_by_code_type(rule_type: Optional[str] = "cms"):
     ncci_ptp = set(row[0] for row in cursor.fetchall())
     ncci_codes = ncci_mue | ncci_ptp
 
+    # Get meta-categories with documents (exclude policies)
+    cursor.execute("""
+        SELECT DISTINCT dc.code_pattern, dc.code_type
+        FROM document_codes dc
+        JOIN documents d ON dc.document_id = d.file_hash
+        WHERE d.parsed_at IS NOT NULL
+          AND d.doc_type IN ('clinical_guideline', 'codebook')
+          AND LENGTH(dc.code_pattern) <= 2
+    """)
+    doc_meta_cats = set(f"{row[0].upper()}:{row[1]}" for row in cursor.fetchall())
+
     conn.close()
 
     # Get rules from filesystem cache too
@@ -792,7 +803,14 @@ async def get_categories_by_code_type(rule_type: Optional[str] = "cms"):
         has_rule = rule_info.get(rule_type if rule_type else "cms", False)
         has_guideline = rule_info.get('guideline', False)
         has_ncci = pattern in ncci_codes if code_type in ('CPT', 'HCPCS') else False
-        has_sources = has_guideline or has_ncci
+        # For guideline rules: source = documents
+        # For cms rules: source = guideline rule OR NCCI
+        meta_key = f"{meta_cat.upper()}:{code_type}"
+        has_documents = meta_key in doc_meta_cats
+        if rule_type == 'guideline':
+            has_sources = has_documents
+        else:
+            has_sources = has_guideline or has_ncci
 
         if has_rule:
             result[code_type]["codes_with_rules"] += 1
@@ -849,15 +867,26 @@ async def get_codes_by_meta_category(code_type: str, meta_category: str):
     """, (code_type,))
     rules_rows = cursor.fetchall()
 
-    # Get documents linked to codes
+    # Get documents linked to meta-categories (exclude policies)
     cursor.execute("""
         SELECT dc.code_pattern, dc.document_id, d.filename
         FROM document_codes dc
         JOIN documents d ON dc.document_id = d.file_hash
-        WHERE dc.code_type = ? AND d.parsed_at IS NOT NULL
+        WHERE dc.code_type = ?
+          AND d.parsed_at IS NOT NULL
+          AND d.doc_type IN ('clinical_guideline', 'codebook')
+          AND LENGTH(dc.code_pattern) <= 2
     """, (code_type,))
     doc_rows = cursor.fetchall()
     conn.close()
+
+    # Build docs lookup by meta-category
+    docs_by_meta = {}
+    for pattern, doc_id, filename in doc_rows:
+        meta = pattern.upper()
+        if meta not in docs_by_meta:
+            docs_by_meta[meta] = []
+        docs_by_meta[meta].append({'id': doc_id, 'filename': filename})
 
     # Get rules from filesystem cache too
     rules_cache = _get_rules_cache()
@@ -893,12 +922,6 @@ async def get_codes_by_meta_category(code_type: str, meta_category: str):
                     versions = file_info['cms_versions']
                     rules_lookup[fs_pattern]['cms'] = {'rule_id': None, 'version': int(versions[-1][1:]) if versions else 1}
 
-    docs_lookup = {}
-    for pattern, doc_id, filename in doc_rows:
-        if pattern not in docs_lookup:
-            docs_lookup[pattern] = []
-        docs_lookup[pattern].append({'id': doc_id, 'filename': filename})
-
     # For CPT/HCPCS: get NCCI data availability
     ncci_lookup = {}
     if code_type in ('CPT', 'HCPCS'):
@@ -927,7 +950,8 @@ async def get_codes_by_meta_category(code_type: str, meta_category: str):
 
     for pattern, c_type, level, description, meta_cat in hierarchy_rows:
         rule_info = rules_lookup.get(pattern, {})
-        docs = docs_lookup.get(pattern, [])
+        # Documents are inherited from meta-category
+        docs = docs_by_meta.get(meta_cat.upper(), []) if meta_cat else []
         ncci_info = ncci_lookup.get(pattern, {})
 
         # Check parent rules for inheritance indicator
@@ -935,12 +959,15 @@ async def get_codes_by_meta_category(code_type: str, meta_category: str):
         has_cms = 'cms' in rule_info
         has_ncci = bool(ncci_info.get('has_mue') or ncci_info.get('has_ptp'))
 
+        has_documents = len(docs) > 0
+
         code_data = {
             'code': pattern,
             'type': c_type,
             'description': description,
             'level': level,
             'documents': docs,
+            'has_documents': has_documents,
             'has_ncci': has_ncci,
             'rule_status': {
                 'has_rule': has_guideline,

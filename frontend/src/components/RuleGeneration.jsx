@@ -15,18 +15,18 @@ const API_BASE = 'http://localhost:8001/api/rules';
 // HOOKS
 // =============================================================================
 
-function useCategories() {
-  const [data, setData] = useState({ categories: [], total_codes: 0, total_with_rules: 0 });
+function useCategoriesByType() {
+  const [data, setData] = useState({});
   const [loading, setLoading] = useState(true);
 
   const fetch_ = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/categories`);
+      const res = await fetch(`${API_BASE}/categories-by-type?rule_type=guideline`);
       const json = await res.json();
       setData(json);
     } catch (err) {
-      console.error('Failed to fetch categories:', err);
+      console.error('Failed to fetch categories by type:', err);
     } finally {
       setLoading(false);
     }
@@ -34,10 +34,10 @@ function useCategories() {
 
   useEffect(() => { fetch_(); }, [fetch_]);
 
-  return { ...data, loading, refetch: fetch_ };
+  return { data, loading, refetch: fetch_ };
 }
 
-function useCategoryCode(categoryName) {
+function useCategoryCode(metaCategory, codeType) {
   const [data, setData] = useState({
     diagnoses: [],
     procedures: [],
@@ -49,15 +49,15 @@ function useCategoryCode(categoryName) {
   const [loading, setLoading] = useState(false);
 
   const fetchCodes = useCallback(() => {
-    if (!categoryName) return;
+    if (!metaCategory || !codeType) return;
 
     setLoading(true);
-    fetch(`${API_BASE}/categories/${encodeURIComponent(categoryName)}/codes`)
+    fetch(`${API_BASE}/codes-by-meta/${encodeURIComponent(codeType)}/${encodeURIComponent(metaCategory)}`)
       .then(res => res.json())
       .then(json => setData(json))
       .catch(err => console.error('Failed to fetch codes:', err))
       .finally(() => setLoading(false));
-  }, [categoryName]);
+  }, [metaCategory, codeType]);
 
   useEffect(() => {
     fetchCodes();
@@ -67,92 +67,177 @@ function useCategoryCode(categoryName) {
 }
 
 // =============================================================================
-// CATEGORY LIST
+// HIERARCHICAL CATEGORY LIST
 // =============================================================================
 
-const CategoryList = ({ categories, selectedCategory, onSelectCategory, loading }) => {
+const CODE_TYPE_ORDER = ['ICD-10', 'CPT', 'HCPCS'];
+
+const HierarchicalCategoryList = ({
+  categoriesByType,
+  selectedCodeType,
+  selectedMetaCategory,
+  onSelectCategory,
+  loading,
+  viewFilter = 'actionable'
+}) => {
+  const [expandedTypes, setExpandedTypes] = useState(['ICD-10', 'CPT', 'HCPCS']);
+
+  // Helper to get count based on filter
+  const getFilteredCount = (cat) => {
+    switch (viewFilter) {
+      case 'generated': return cat.with_rules || 0;
+      case 'ready': return cat.ready || 0;
+      case 'actionable': return (cat.with_sources || 0);
+      case 'all': return cat.total || 0;
+      default: return cat.total || 0;
+    }
+  };
+
+  const getFilteredTotal = (typeData) => {
+    switch (viewFilter) {
+      case 'generated': return typeData.codes_with_rules || 0;
+      case 'ready': return typeData.codes_ready || 0;
+      case 'actionable': return typeData.codes_with_sources || 0;
+      case 'all': return typeData.total_codes || 0;
+      default: return typeData.total_codes || 0;
+    }
+  };
+
+  const toggleType = (codeType) => {
+    setExpandedTypes(prev =>
+      prev.includes(codeType) ? prev.filter(t => t !== codeType) : [...prev, codeType]
+    );
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-6 h-6 animate-spin text-teal-600" />
+        <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
       </div>
     );
   }
 
-  if (categories.length === 0) {
+  if (Object.keys(categoriesByType).length === 0) {
     return (
       <div className="text-center py-8 text-gray-400">
-        <p>No categories with codes</p>
+        <p>No categories found</p>
         <p className="text-sm mt-1">Parse documents first</p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-1.5">
-      {categories.map(cat => {
-        const isSelected = selectedCategory === cat.name;
-        const codesWithRules = cat.codes_with_rules || 0;
-        const totalCodes = cat.total_codes || 0;
-        const coveragePercent = totalCodes > 0 ? Math.round((codesWithRules / totalCodes) * 100) : 0;
+    <div className="space-y-2">
+      {CODE_TYPE_ORDER.map(codeType => {
+        const typeData = categoriesByType[codeType];
+        if (!typeData || typeData.categories.length === 0) return null;
+
+        // Filter categories based on viewFilter
+        const filteredCategories = typeData.categories.filter(cat => getFilteredCount(cat) > 0);
+        const filteredTotal = getFilteredTotal(typeData);
+
+        // Hide entire code type if no categories match filter
+        if (filteredCategories.length === 0) return null;
+
+        const isExpanded = expandedTypes.includes(codeType);
+        const coveragePercent = filteredTotal > 0
+          ? Math.round((typeData.codes_with_rules / filteredTotal) * 100)
+          : 0;
 
         return (
-          <button
-            key={cat.name}
-            onClick={() => onSelectCategory(cat.name)}
-            className="w-full text-left p-3 rounded-lg transition-all"
-            style={{
-              background: isSelected ? '#eef4fa' : 'white',
-              border: '1px solid',
-              borderColor: isSelected ? '#5d8bb8' : '#e5e7eb',
-              borderLeft: isSelected ? '4px solid #5d8bb8' : '4px solid transparent'
-            }}
-            onMouseEnter={(e) => {
-              if (!isSelected) {
-                e.currentTarget.style.background = '#f9fafb';
-                e.currentTarget.style.borderLeftColor = '#9cb8d4';
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (!isSelected) {
-                e.currentTarget.style.background = 'white';
-                e.currentTarget.style.borderLeftColor = 'transparent';
-              }
-            }}
-          >
-            <div className="flex items-center justify-between">
-              <span className="font-medium text-xs uppercase tracking-wide" style={{ color: '#1a1a1a' }}>{cat.name}</span>
-              <ChevronRight
-                className="w-4 h-4 transition-transform"
-                style={{
-                  color: '#9ca3af',
-                  transform: isSelected ? 'rotate(90deg)' : 'rotate(0deg)'
-                }}
-              />
-            </div>
-
-            {/* Coverage progress bar */}
-            <div className="mt-2 flex items-center gap-2">
+          <div key={codeType} className="border rounded-lg overflow-hidden" style={{ borderColor: '#e5e7eb' }}>
+            {/* Code Type Header */}
+            <button
+              onClick={() => toggleType(codeType)}
+              className="w-full flex items-center gap-2 p-3 bg-gray-50 hover:bg-gray-100 transition-colors"
+            >
+              {isExpanded ? (
+                <ChevronDown className="w-4 h-4 text-gray-500" />
+              ) : (
+                <ChevronRight className="w-4 h-4 text-gray-500" />
+              )}
+              <Hash className="w-4 h-4 text-gray-600" />
+              <span className="font-semibold text-sm flex-1 text-left">{codeType}</span>
+              <span className="text-xs text-gray-500 font-mono">
+                {viewFilter === 'generated' || viewFilter === 'ready'
+                  ? filteredTotal
+                  : `${typeData.codes_with_rules}/${filteredTotal}`}
+              </span>
               <div
-                className="flex-1 h-1.5 rounded-full overflow-hidden"
+                className="w-16 h-1.5 rounded-full overflow-hidden"
                 style={{ background: '#e5e7eb' }}
               >
                 <div
-                  className="h-full rounded-full transition-all"
+                  className="h-full rounded-full"
                   style={{
                     width: `${coveragePercent}%`,
-                    background: coveragePercent === 100 ? '#4878a8' : coveragePercent > 0 ? '#5d8bb8' : '#e5e7eb'
+                    background: coveragePercent === 100 ? '#059669' : coveragePercent > 0 ? '#3b82f6' : '#e5e7eb'
                   }}
                 />
               </div>
-              <span
-                className="text-xs font-mono"
-                style={{ color: '#6b7280', minWidth: '45px', textAlign: 'right' }}
-              >
-                {codesWithRules}/{totalCodes}
-              </span>
-            </div>
-          </button>
+            </button>
+
+            {/* Meta Categories */}
+            {isExpanded && (
+              <div className="border-t" style={{ borderColor: '#e5e7eb' }}>
+                {filteredCategories.map(cat => {
+                  const isSelected = selectedCodeType === codeType && selectedMetaCategory === cat.name;
+                  const filteredCount = getFilteredCount(cat);
+                  const catCoverage = filteredCount > 0 ? Math.round((cat.with_rules / filteredCount) * 100) : 0;
+
+                  return (
+                    <button
+                      key={cat.name}
+                      onClick={() => onSelectCategory(codeType, cat.name)}
+                      className="w-full text-left p-2.5 pl-10 transition-all border-b last:border-b-0"
+                      style={{
+                        background: isSelected ? '#eff6ff' : 'white',
+                        borderColor: '#f3f4f6',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isSelected) e.currentTarget.style.background = '#f9fafb';
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isSelected) e.currentTarget.style.background = 'white';
+                      }}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span
+                          className="font-mono font-bold text-sm"
+                          style={{ color: isSelected ? '#2563eb' : '#374151' }}
+                        >
+                          {cat.name}
+                        </span>
+                        <span className="text-xs font-mono" style={{ color: '#6b7280' }}>
+                          {viewFilter === 'generated' || viewFilter === 'ready'
+                            ? filteredCount
+                            : `${cat.with_rules}/${filteredCount}`}
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        {cat.description}
+                      </div>
+                      {/* Mini progress bar */}
+                      <div className="mt-1.5 flex items-center gap-2">
+                        <div
+                          className="flex-1 h-1 rounded-full overflow-hidden"
+                          style={{ background: '#e5e7eb' }}
+                        >
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${catCoverage}%`,
+                              background: catCoverage === 100 ? '#059669' : catCoverage > 0 ? '#3b82f6' : '#e5e7eb'
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         );
       })}
     </div>
@@ -290,7 +375,7 @@ const CodeItem = ({ code, isSelected, canSelect, generating, onToggleCode, onDel
                 className="text-xs font-medium px-2 py-1 rounded"
                 style={{ background: '#f0fdf4', color: '#059669' }}
               >
-                v{code.rule_status.version}
+                v{code.rule_status.guideline_version || code.rule_status.version || 1}
               </span>
               {isInheritedRule && matchedPattern && (
                 <span
@@ -338,7 +423,7 @@ const CodeItem = ({ code, isSelected, canSelect, generating, onToggleCode, onDel
             </>
           ) : hasRule && isMock ? (
             <span className="text-xs px-2 py-1 rounded" style={{ background: '#fef3c7', color: '#d97706' }}>
-              mock v{code.rule_status.version}
+              mock v{code.rule_status.guideline_version || code.rule_status.version || 1}
             </span>
           ) : hasSources ? (
             <button
@@ -1325,21 +1410,41 @@ function parseSSELine(line) {
 // =============================================================================
 
 export default function RuleGeneration() {
-  const { categories, total_codes, total_with_rules, loading, refetch } = useCategories();
-  const [selectedCategory, setSelectedCategory] = useState(null);
-  const { diagnoses, procedures, loading: codesLoading, refetch: refetchCodes } = useCategoryCode(selectedCategory);
+  const { data: categoriesByType, loading, refetch } = useCategoriesByType();
+
+  // Selection state: code_type + meta_category
+  const [selectedCodeType, setSelectedCodeType] = useState(null);
+  const [selectedMetaCategory, setSelectedMetaCategory] = useState(null);
+  const [viewFilter, setViewFilter] = useState('actionable');
+
+  // Fetch codes for selected category
+  const { diagnoses, procedures, loading: codesLoading, refetch: refetchCodes } = useCategoryCode(selectedMetaCategory, selectedCodeType);
 
   const [selectedCodes, setSelectedCodes] = useState(new Set());
   const [generating, setGenerating] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
   const [jsonValidators, setJsonValidators] = useState(true); // Faster JSON mode for validators
 
-  // Auto-select first category when categories load
+  // Auto-select first category when data loads
   useEffect(() => {
-    if (!selectedCategory && categories.length > 0) {
-      setSelectedCategory(categories[0].name);
+    if (!selectedMetaCategory && Object.keys(categoriesByType).length > 0) {
+      for (const codeType of ['ICD-10', 'CPT', 'HCPCS']) {
+        const typeData = categoriesByType[codeType];
+        if (typeData?.categories?.length > 0) {
+          setSelectedCodeType(codeType);
+          setSelectedMetaCategory(typeData.categories[0].name);
+          break;
+        }
+      }
     }
-  }, [categories, selectedCategory]);
+  }, [categoriesByType, selectedMetaCategory]);
+
+  // Handle category selection
+  const handleSelectCategory = (codeType, metaCategory) => {
+    setSelectedCodeType(codeType);
+    setSelectedMetaCategory(metaCategory);
+    setSelectedCodes(new Set());
+  };
   const [generationProgress, setGenerationProgress] = useState({});
   const [viewingCode, setViewingCode] = useState(null);
 
@@ -1632,12 +1737,36 @@ export default function RuleGeneration() {
       <div className="p-4 border-b bg-white">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="font-semibold text-lg">Guideline Rules</h2>
+            <h2 className="font-semibold text-lg flex items-center gap-2">
+              <BookOpen className="w-5 h-5 text-blue-600" />
+              Guideline Rules
+            </h2>
             <p className="text-sm text-gray-500">
-              {total_with_rules} / {total_codes} codes have rules
+              ICD-10/CPT/HCPCS validation rules from clinical guidelines
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {/* View filters */}
+            <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+              {[
+                { key: 'actionable', label: 'With Docs' },
+                { key: 'generated', label: 'Generated' },
+                { key: 'all', label: 'All' },
+              ].map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setViewFilter(key)}
+                  className="px-3 py-1.5 text-xs font-medium rounded-md transition-colors"
+                  style={{
+                    background: viewFilter === key ? 'white' : 'transparent',
+                    color: viewFilter === key ? '#2563eb' : '#6b7280',
+                    boxShadow: viewFilter === key ? '0 1px 2px rgba(0,0,0,0.05)' : 'none',
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer" title="Use JSON format for validator outputs (faster)">
               <input
                 type="checkbox"
@@ -1648,7 +1777,7 @@ export default function RuleGeneration() {
               Fast mode
             </label>
             <button
-              onClick={refetch}
+              onClick={() => { refetch(); if (selectedMetaCategory) refetchCodes(); }}
               className="p-2 hover:bg-gray-100 rounded-lg"
               title="Refresh data"
             >
@@ -1661,21 +1790,23 @@ export default function RuleGeneration() {
       {/* Content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Categories sidebar */}
-        <div className="w-72 border-r bg-gray-50 p-4 overflow-auto">
-          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-3">Categories</h3>
-          <CategoryList
-            categories={categories}
-            selectedCategory={selectedCategory}
-            onSelectCategory={setSelectedCategory}
+        <div className="w-80 border-r bg-gray-50 p-4 overflow-auto">
+          <h3 className="text-xs font-semibold text-gray-500 uppercase mb-3">Code Hierarchy</h3>
+          <HierarchicalCategoryList
+            categoriesByType={categoriesByType}
+            selectedCodeType={selectedCodeType}
+            selectedMetaCategory={selectedMetaCategory}
+            onSelectCategory={handleSelectCategory}
             loading={loading}
+            viewFilter={viewFilter}
           />
         </div>
 
         {/* Codes panel */}
         <div className="flex-1 overflow-hidden">
-          {selectedCategory ? (
+          {selectedMetaCategory ? (
             <CodeList
-              categoryName={selectedCategory}
+              categoryName={`${selectedMetaCategory} (${selectedCodeType})`}
               diagnoses={diagnoses}
               procedures={procedures}
               loading={codesLoading}
@@ -1691,9 +1822,9 @@ export default function RuleGeneration() {
           ) : (
             <div className="h-full flex items-center justify-center text-gray-400">
               <div className="text-center">
-                <Hash className="w-16 h-16 mx-auto mb-4 opacity-30" />
+                <BookOpen className="w-16 h-16 mx-auto mb-4 opacity-30" />
                 <p className="text-lg font-medium">Select a category</p>
-                <p className="text-sm">Choose a category to view codes</p>
+                <p className="text-sm">Choose a category to generate guideline rules</p>
               </div>
             </div>
           )}
