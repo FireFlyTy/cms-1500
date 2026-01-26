@@ -1108,23 +1108,26 @@ Include a rule if there is ANY possibility to check it from CMS-1500 fields:
 ⚠️ WRONG: "Cannot validate because requires clinical judgment" (for code-based checks)
 ✓ RIGHT: Include as warning/info if ANY claim field can be checked
 
-**MANDATORY RULE TYPES CHECKLIST** — For EACH type below, ask: "Does the guideline mention this? Can I create a rule?"
+**RULE TYPES REFERENCE** — Use this to RECOGNIZE rule types in the guideline. Do NOT invent rules!
 
-| Type | Question to Ask | Example Rule |
-|------|-----------------|--------------|
-| Uniqueness | Can this code appear multiple times? | "E00.2 only once per claim" |
-| Sequencing | Is there a required primary diagnosis order? | "O-code must be primary when present" |
-| Specificity | Should a more specific code be used instead? | "Don't report E00.2 with other E00.x codes" |
-| Mutual Exclusion | Are there conflicting codes that can't coexist? | "E00.2 conflicts with E11.x" |
-| Expected Codes | Should other codes typically accompany this one? | "E11.x expects Z79.4 for insulin" |
-| Laterality | Does this code have laterality requirements? | "No laterality for E00.2" |
-| Age Check | Is there an age restriction? | "Code X only for patients under 18" |
-| Gender Check | Is there a gender restriction? | "O-codes only for female patients" |
-| Code-First | Is there a "code first" instruction? | "Code underlying condition first" |
+| Type | CMS-1500 Field | Guideline Pattern to Look For |
+|------|----------------|-------------------------------|
+| Uniqueness | diagnosisCodes[].code | "code may be reported only once", "do not duplicate" |
+| Sequencing | diagnosisCodes[0].code | "must be primary", "sequence first", "code first" |
+| Dx Conflicts | diagnosisCodes[].code | "mutually exclusive", "do not use with", "excludes" |
+| Expected Dx | diagnosisCodes[].code | "also assign", "use additional code", "report with" |
+| Age Check | member.dateOfBirth | "pediatric", "adult only", "age restriction" |
+| Gender Check | member.gender | "female only", "maternal record", "male only" |
+| POS Check | placeOfService | "inpatient only", "outpatient", "facility" |
+| Modifier Required | procedureCodes[].modifiers | "modifier required", "bilateral", "distinct" |
+| Unit Limits | procedureCodes[].units | "maximum units", "per day limit" |
+| Bundling | procedureCodes[].code | "bundled", "included in", "cannot bill separately" |
+| Date Logic | dateOfService | "within X days", "same date", "newborn period" |
 
-⚠️ You MUST consider EACH type above and either:
-1. Create a rule for it, OR
-2. Explicitly note why it doesn't apply (in your thinking)
+⚠️ IMPORTANT: Only create rules for statements that ACTUALLY EXIST in the guideline.
+Do NOT invent rules. If the guideline doesn't mention a rule type, skip it.
+
+NOTE: ICD-10 codes won't have Modifier/Unit/Bundling rules (those are CPT/HCPCS only).
 
 Mark each new rule as [NEW from guideline].
 
