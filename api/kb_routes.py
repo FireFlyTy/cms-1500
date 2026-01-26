@@ -371,10 +371,17 @@ async def parse_pdf_with_metadata(
         file_bytes: bytes,
         filename: str,
         file_hash: str,
-        progress_callback=None
+        progress_callback=None,
+        provider: str = None,
+        openai_model: str = "gpt-5.2",
+        reasoning_effort: str = "low"
 ) -> DocumentData:
     """Парсит PDF используя V2 pipeline с JSON форматом."""
     import fitz  # PyMuPDF
+
+    # Provider from param or env var (default: gemini)
+    if provider is None:
+        provider = os.getenv("PARSER_PROVIDER", "gemini").lower()
 
     # Extract text from PDF using fitz (not Gemini vision)
     pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -384,7 +391,7 @@ async def parse_pdf_with_metadata(
         pdf_text_chunks.append(page.get_text())
     pdf_doc.close()
 
-    print(f"[PARSER] Starting V2: {filename} ({total_pages} pages)")
+    print(f"[PARSER] Starting V2: {filename} ({total_pages} pages), provider: {provider}")
 
     # Load topics and meta-categories
     topics = load_topics_from_db()
@@ -398,7 +405,10 @@ async def parse_pdf_with_metadata(
         skip_critic=True,
         skip_fix=True,
         chunk_size=1,  # One page at a time for accuracy
-        parallel_limit=30
+        parallel_limit=30,
+        provider=provider,
+        openai_model=openai_model,
+        reasoning_effort=reasoning_effort
     )
 
     # Parse result
@@ -695,6 +705,78 @@ async def get_document_pdf(doc_id: str):
             "Access-Control-Expose-Headers": "Content-Length, Accept-Ranges"
         }
     )
+
+
+@router.delete("/documents/{doc_id}")
+async def delete_document(doc_id: str, delete_files: bool = True):
+    """
+    Удаляет документ из базы данных и опционально файлы.
+
+    Args:
+        doc_id: ID документа (file_hash)
+        delete_files: Удалить также файлы (PDF, JSON, TXT). Default: True
+    """
+    import shutil
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Check if document exists
+    cursor.execute("SELECT file_hash, filename, source_path FROM documents WHERE file_hash = ?", (doc_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_hash, filename, source_path = row[0], row[1], row[2]
+
+    try:
+        # Delete from all related tables
+        cursor.execute("DELETE FROM document_codes WHERE document_id = ?", (doc_id,))
+        codes_deleted = cursor.rowcount
+
+        cursor.execute("DELETE FROM document_categories WHERE document_id = ?", (doc_id,))
+        categories_deleted = cursor.rowcount
+
+        cursor.execute("DELETE FROM document_stages WHERE document_id = ?", (doc_id,))
+        stages_deleted = cursor.rowcount
+
+        # Delete from documents table
+        cursor.execute("DELETE FROM documents WHERE file_hash = ?", (doc_id,))
+
+        conn.commit()
+
+        files_deleted = []
+
+        if delete_files:
+            # Delete parsed content directory
+            doc_dir = os.path.join(DOCUMENTS_DIR, file_hash)
+            if os.path.exists(doc_dir):
+                shutil.rmtree(doc_dir)
+                files_deleted.append(doc_dir)
+
+            # Optionally delete source PDF (be careful!)
+            # We don't delete source PDF by default as it might be needed
+
+        conn.close()
+
+        return {
+            "status": "deleted",
+            "file_hash": file_hash,
+            "filename": filename,
+            "deleted": {
+                "codes": codes_deleted,
+                "categories": categories_deleted,
+                "stages": stages_deleted,
+                "files": files_deleted
+            }
+        }
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
 
 @router.post("/documents/{doc_id}/parse")

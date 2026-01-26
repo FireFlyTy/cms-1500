@@ -105,11 +105,11 @@ async def _stream_google(prompt: str, thinking_budget: int, model: str = None) -
                     include_thoughts=True,
                     thinking_budget=thinking_budget
                 ),
-                temperature=0.7
+                temperature=0.1
             )
         else:
             config = types.GenerateContentConfig(
-                temperature=0.7
+                temperature=0.1
             )
 
         response_stream = await google_client.aio.models.generate_content_stream(
@@ -317,10 +317,10 @@ async def call_gemini_model(
                     include_thoughts=False,
                     thinking_budget=thinking_budget
                 ),
-                temperature=0.7
+                temperature=0.1
             )
         else:
-            config = types.GenerateContentConfig(temperature=0.7)
+            config = types.GenerateContentConfig(temperature=0.1)
 
         response = await google_client.aio.models.generate_content(
             model=model,

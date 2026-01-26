@@ -195,20 +195,26 @@ async def stage1_draft_extraction(
     topics: List[Dict],
     meta_categories: Dict = None,
     thinking_budget: int = 2048,
-    start_page: int = 1
+    start_page: int = 1,
+    provider: str = "gemini",
+    openai_model: str = "gpt-5.2",
+    reasoning_effort: str = "low"
 ) -> str:
     """
-    Stage 1: Gemini Draft Extraction
+    Stage 1: Draft Extraction (Gemini or OpenAI)
 
     Args:
         pdf_text_chunks: List of PDF page text chunks
         topics: Topics dictionary
         meta_categories: Meta-categories dict
-        thinking_budget: Gemini thinking budget
+        thinking_budget: Gemini thinking budget (ignored for OpenAI)
         start_page: Starting page number (for correct page labeling)
+        provider: "gemini" or "openai"
+        openai_model: OpenAI model to use (default: gpt-5.1)
+        reasoning_effort: OpenAI reasoning effort (default: low)
 
     Returns:
-        Raw extraction text from Gemini
+        Raw extraction text from model
     """
     if meta_categories is None:
         meta_categories = load_meta_categories_from_json()
@@ -227,8 +233,15 @@ async def stage1_draft_extraction(
         page_num = start_page + i
         prompt += f"--- Page {page_num} ---\n{chunk}\n\n"
 
-    # Call Gemini
-    response = await call_gemini_model(prompt, thinking_budget=thinking_budget)
+    # Call model based on provider
+    if provider == "openai":
+        response = await call_openai_model(
+            prompt,
+            model=openai_model,
+            reasoning_effort=reasoning_effort
+        )
+    else:
+        response = await call_gemini_model(prompt, thinking_budget=thinking_budget)
 
     return response
 
@@ -412,7 +425,10 @@ async def process_single_chunk(
     topics: List[Dict],
     meta_categories: Dict,
     skip_critic: bool = False,
-    skip_fix: bool = False
+    skip_fix: bool = False,
+    provider: str = "gemini",
+    openai_model: str = "gpt-5.2",
+    reasoning_effort: str = "low"
 ) -> Dict:
     """
     Process a single chunk through all 3 stages.
@@ -425,6 +441,9 @@ async def process_single_chunk(
         meta_categories: Meta-categories dict
         skip_critic: Skip GPT-5.1 critic
         skip_fix: Skip GPT-4.1 fix
+        provider: "gemini" or "openai" for draft extraction
+        openai_model: OpenAI model (default: gpt-5.1)
+        reasoning_effort: OpenAI reasoning effort (default: low)
 
     Returns:
         Dict with draft, issues, final extraction for this chunk
@@ -436,14 +455,18 @@ async def process_single_chunk(
 
     print(f"  [Chunk {chunk_index}] Starting pages {pages_range}...")
 
-    # Stage 1: Gemini Draft
+    # Stage 1: Draft Extraction
     draft = await stage1_draft_extraction(
         pdf_text_chunks=chunk_pages,
         topics=topics,
         meta_categories=meta_categories,
-        start_page=start_page
+        start_page=start_page,
+        provider=provider,
+        openai_model=openai_model,
+        reasoning_effort=reasoning_effort
     )
-    print(f"  [Chunk {chunk_index}] ✓ Gemini draft complete")
+    provider_name = f"{openai_model}" if provider == "openai" else "Gemini"
+    print(f"  [Chunk {chunk_index}] ✓ {provider_name} draft complete")
 
     issues = []
     final = draft
@@ -506,13 +529,16 @@ async def run_extraction_pipeline(
     skip_critic: bool = False,
     skip_fix: bool = False,
     chunk_size: int = CHUNK_SIZE,
-    parallel_limit: int = PARALLEL_LIMIT
+    parallel_limit: int = PARALLEL_LIMIT,
+    provider: str = "gemini",
+    openai_model: str = "gpt-5.2",
+    reasoning_effort: str = "low"
 ) -> PipelineResult:
     """
     Run the full 3-stage extraction pipeline with parallel chunk processing.
 
     Pipeline per chunk:
-        Gemini (Draft) → GPT-5.1 (Critic) → GPT-4.1 (Fix)
+        Model (Draft) → GPT-5.1 (Critic) → GPT-4.1 (Fix)
 
     Multiple chunks are processed in parallel.
 
@@ -524,6 +550,9 @@ async def run_extraction_pipeline(
         skip_fix: Skip Stage 3 (apply fixes)
         chunk_size: Pages per chunk (default 15)
         parallel_limit: Max concurrent chunk pipelines (default 3)
+        provider: "gemini" or "openai" for draft extraction
+        openai_model: OpenAI model (default: gpt-5.1)
+        reasoning_effort: OpenAI reasoning effort (default: low)
 
     Returns:
         PipelineResult with merged extractions from all chunks
@@ -537,8 +566,9 @@ async def run_extraction_pipeline(
     total_pages = len(pdf_text_chunks)
     num_chunks = (total_pages + chunk_size - 1) // chunk_size
 
+    provider_name = f"{openai_model}" if provider == "openai" else "Gemini"
     print(f"🔄 Multi-Model Pipeline: {total_pages} pages in {num_chunks} chunks")
-    print(f"   Parallel limit: {parallel_limit}, Chunk size: {chunk_size}")
+    print(f"   Provider: {provider_name}, Parallel limit: {parallel_limit}, Chunk size: {chunk_size}")
 
     # Create chunk tasks
     semaphore = asyncio.Semaphore(parallel_limit)
@@ -552,7 +582,10 @@ async def run_extraction_pipeline(
                 topics=topics,
                 meta_categories=meta_categories,
                 skip_critic=skip_critic,
-                skip_fix=skip_fix
+                skip_fix=skip_fix,
+                provider=provider,
+                openai_model=openai_model,
+                reasoning_effort=reasoning_effort
             )
 
     # Build tasks

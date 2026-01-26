@@ -1865,6 +1865,18 @@ def get_chunk_prompt(pages_count: int, start_page: int) -> str:
 CHUNK_EXTRACTION_PROMPT_V2 = """Extract ONLY metadata from these {pages_count} PDF pages.
 Return a JSON array with one object per page.
 
+=== CRITICAL: MAXIMUM COVERAGE ===
+
+You are an EXTREMELY thorough medical coding specialist. Your goal is MAXIMUM COVERAGE.
+Follow the principle: "Better to over-extract than to miss something important."
+
+- Extract ALL codes, topics, and medications you can identify - even if uncertain
+- If a condition/procedure/drug is IMPLIED but not explicitly named, STILL extract it
+- Multiple codes per page is NORMAL - a typical clinical page has 3-5 codes
+- Multiple medications per page is EXPECTED in treatment guidelines
+- When in doubt, INCLUDE IT - false positives are acceptable, false negatives are NOT
+- Re-read the text multiple times to ensure nothing is missed
+
 === JSON OUTPUT FORMAT ===
 
 [
@@ -1951,27 +1963,53 @@ Anchors are SEARCH STRINGS. Ctrl+F must find EXACT match in page text!
 Use SINGLE LETTER/DIGIT for "code" field: E, F, I, J, 9 (NOT E11, F32, J1950)
 Match by MEANING: "diabetes" → E, "depression" → F, "injectable" → J
 
+EXTRACT AGGRESSIVELY:
+- Any mention of a disease/condition → extract the ICD-10 category
+- Any mention of a procedure → extract the CPT category
+- Any mention of injectable/infusion → extract J (HCPCS)
+- Any mention of equipment/supplies → extract appropriate HCPCS category
+- If text discusses "cardiovascular", "heart", "hypertension" → extract I
+- If text discusses "mental health", "anxiety", "depression" → extract F
+
 === TOPICS DICTIONARY ===
 
 {topics_dictionary}
 
 ONLY use topic names from this dictionary. Skip unlisted topics.
 
-=== MEDICATIONS ===
+=== MEDICATIONS - MAXIMUM EXTRACTION ===
 
-Extract SPECIFIC drug names mentioned in the text:
-- Generic names: semaglutide, metformin, dulaglutide, insulin, aspirin
-- Brand names: Ozempic, Trulicity, Victoza, Byetta, Januvia
-- Drug classes when specific: GLP-1 receptor agonists, SGLT2 inhibitors, DPP-4 inhibitors
+BE EXTREMELY THOROUGH! Scan EVERY sentence for medication names.
 
-DO NOT extract:
-- General terms: "medication", "drug", "therapy", "treatment"
-- Code-only references: "J1950" without drug name
+Known medications (extract if found):
+{medications_whitelist}
 
-Examples of what TO extract:
-- "semaglutide (Ozempic)" → name: "semaglutide"
-- "metformin is contraindicated" → name: "metformin"
-- "GLP-1 receptor agonists such as dulaglutide" → name: "dulaglutide"
+EXTRACTION RULES - BE AGGRESSIVE:
+1. ANY word from the list above → EXTRACT IT
+2. ANY medication with J-code → EXTRACT IT
+3. Partial matches count: "insulin doses" → extract "insulin"
+4. Both brand AND generic: "Ozempic" → extract "semaglutide" (or "Ozempic")
+5. Plural forms: "statins" → look for specific statin names
+6. Read EVERY LINE - medications often appear in lists, tables, criteria
+
+DO NOT MISS:
+- Medications in parentheses: "prior trial of metformin (Glucophage)"
+- Medications in lists: "• semaglutide • dulaglutide • liraglutide"
+- Medications with dosing: "Lantus 20 units" → extract "insulin glargine" or "Lantus"
+- Medications in criteria: "Patient must have tried metformin"
+
+NEVER extract (these are NOT medications):
+- Generic words: "medication", "drug", "therapy", "treatment", "agent"
+- Drug classes alone: "GLP-1 agonist" (but "semaglutide, a GLP-1" → extract "semaglutide")
+
+Examples - MUST extract ALL of these:
+- "adjust insulin doses" → "insulin"
+- "metformin is contraindicated" → "metformin"
+- "Ozempic was prescribed" → "semaglutide"
+- "aspirin 81mg daily" → "aspirin"
+- "J1950 injection" → "semaglutide"
+- "patients use glucose levels to adjust their insulin" → "insulin"
+- "CGM for insulin-requiring patients" → "insulin"
 
 === OUTPUT ===
 
@@ -2039,11 +2077,40 @@ def format_topics_for_prompt(topics: list) -> str:
     return '\n'.join(lines)
 
 
+def load_medications_whitelist(json_path: str = None) -> dict:
+    """Load medications whitelist from JSON file."""
+    import json as json_module
+    from pathlib import Path
+
+    if json_path is None:
+        json_path = Path(__file__).parent.parent.parent / "data" / "seed" / "medications_whitelist.json"
+
+    with open(json_path, 'r', encoding='utf-8') as f:
+        return json_module.load(f)
+
+
+def format_medications_for_prompt(meds_whitelist: dict) -> str:
+    """Format medications whitelist for injection into prompt - FULL LIST for matching."""
+    all_meds = set()
+    categories = meds_whitelist.get('categories', {})
+
+    for cat_data in categories.values():
+        for name in cat_data.get('names', []):
+            all_meds.add(name.lower())
+        for brand in cat_data.get('brands', []):
+            all_meds.add(brand.lower())
+
+    # Sort and format as searchable list
+    sorted_meds = sorted(all_meds)
+    return ', '.join(sorted_meds)
+
+
 def get_chunk_prompt_v2(
     pages_count: int,
     start_page: int,
     topics: list,
-    meta_categories: dict = None
+    meta_categories: dict = None,
+    medications_whitelist: dict = None
 ) -> str:
     """
     Генерирует prompt для chunk extraction V2 (category-based).
@@ -2053,18 +2120,27 @@ def get_chunk_prompt_v2(
         start_page: Starting page number
         topics: List of topics from topics_dictionary
         meta_categories: Meta-categories dict (loaded from JSON if None)
+        medications_whitelist: Medications whitelist dict (loaded from JSON if None)
     """
     if meta_categories is None:
         meta_categories = load_meta_categories_from_json()
 
+    if medications_whitelist is None:
+        try:
+            medications_whitelist = load_medications_whitelist()
+        except Exception:
+            medications_whitelist = {'categories': {}}
+
     topics_str = format_topics_for_prompt(topics)
     meta_cats_str = format_meta_categories_for_prompt(meta_categories)
+    meds_str = format_medications_for_prompt(medications_whitelist)
 
     return CHUNK_EXTRACTION_PROMPT_V2.format(
         pages_count=pages_count,
         start_page=start_page,
         topics_dictionary=topics_str,
-        meta_categories=meta_cats_str
+        meta_categories=meta_cats_str,
+        medications_whitelist=meds_str
     )
 
 

@@ -1,0 +1,164 @@
+{
+  "description": "Whitelist of medications for document parsing. Extract only these + any medication with J-code.",
+  "categories": {
+    "insulins": {
+      "names": [
+        "insulin", "insulin lispro", "insulin aspart", "insulin glulisine",
+        "insulin glargine", "insulin detemir", "insulin degludec",
+        "NPH insulin", "regular insulin", "insulin isophane"
+      ],
+      "brands": [
+        "Humalog", "Novolog", "Apidra", "Lantus", "Levemir", "Tresiba",
+        "Basaglar", "Toujeo", "Humulin", "Novolin", "Fiasp", "Lyumjev"
+      ]
+    },
+    "glp1_agonists": {
+      "names": [
+        "semaglutide", "dulaglutide", "liraglutide", "exenatide",
+        "tirzepatide", "lixisenatide"
+      ],
+      "brands": [
+        "Ozempic", "Wegovy", "Rybelsus", "Trulicity", "Victoza", "Saxenda",
+        "Byetta", "Bydureon", "Mounjaro", "Zepbound", "Adlyxin"
+      ]
+    },
+    "sglt2_inhibitors": {
+      "names": [
+        "empagliflozin", "dapagliflozin", "canagliflozin", "ertugliflozin"
+      ],
+      "brands": [
+        "Jardiance", "Farxiga", "Invokana", "Steglatro"
+      ]
+    },
+    "dpp4_inhibitors": {
+      "names": [
+        "sitagliptin", "saxagliptin", "linagliptin", "alogliptin"
+      ],
+      "brands": [
+        "Januvia", "Onglyza", "Tradjenta", "Nesina"
+      ]
+    },
+    "biguanides": {
+      "names": ["metformin"],
+      "brands": ["Glucophage", "Fortamet", "Glumetza", "Riomet"]
+    },
+    "sulfonylureas": {
+      "names": [
+        "glipizide", "glyburide", "glimepiride", "chlorpropamide", "tolbutamide"
+      ],
+      "brands": [
+        "Glucotrol", "DiaBeta", "Micronase", "Amaryl"
+      ]
+    },
+    "thiazolidinediones": {
+      "names": ["pioglitazone", "rosiglitazone"],
+      "brands": ["Actos", "Avandia"]
+    },
+    "combination_diabetes": {
+      "names": [],
+      "brands": [
+        "Janumet", "Synjardy", "Xigduo", "Glyxambi", "Qternmet",
+        "Invokamet", "Kombiglyze", "Jentadueto"
+      ]
+    },
+    "cardiovascular": {
+      "names": [
+        "aspirin", "clopidogrel", "warfarin", "rivaroxaban", "apixaban",
+        "dabigatran", "edoxaban", "heparin", "enoxaparin",
+        "atorvastatin", "rosuvastatin", "simvastatin", "pravastatin",
+        "lisinopril", "enalapril", "ramipril", "losartan", "valsartan",
+        "amlodipine", "metoprolol", "carvedilol", "bisoprolol",
+        "furosemide", "hydrochlorothiazide", "spironolactone"
+      ],
+      "brands": [
+        "Plavix", "Coumadin", "Xarelto", "Eliquis", "Pradaxa", "Savaysa",
+        "Lovenox", "Lipitor", "Crestor", "Zocor", "Pravachol",
+        "Prinivil", "Zestril", "Vasotec", "Altace", "Cozaar", "Diovan",
+        "Norvasc", "Lopressor", "Toprol", "Coreg", "Zebeta",
+        "Lasix", "Microzide", "Aldactone"
+      ]
+    },
+    "pain_inflammation": {
+      "names": [
+        "ibuprofen", "naproxen", "celecoxib", "meloxicam",
+        "acetaminophen", "tramadol", "gabapentin", "pregabalin",
+        "duloxetine", "amitriptyline"
+      ],
+      "brands": [
+        "Advil", "Motrin", "Aleve", "Celebrex", "Mobic",
+        "Tylenol", "Ultram", "Neurontin", "Lyrica",
+        "Cymbalta", "Elavil"
+      ]
+    },
+    "respiratory": {
+      "names": [
+        "albuterol", "fluticasone", "budesonide", "montelukast",
+        "tiotropium", "ipratropium", "formoterol", "salmeterol"
+      ],
+      "brands": [
+        "Ventolin", "ProAir", "Flovent", "Pulmicort", "Singulair",
+        "Spiriva", "Atrovent", "Symbicort", "Advair", "Breo"
+      ]
+    },
+    "biologics_immunology": {
+      "names": [
+        "adalimumab", "etanercept", "infliximab", "rituximab",
+        "trastuzumab", "bevacizumab", "pembrolizumab", "nivolumab"
+      ],
+      "brands": [
+        "Humira", "Enbrel", "Remicade", "Rituxan",
+        "Herceptin", "Avastin", "Keytruda", "Opdivo"
+      ]
+    },
+    "mental_health": {
+      "names": [
+        "sertraline", "fluoxetine", "escitalopram", "paroxetine",
+        "venlafaxine", "bupropion", "mirtazapine", "trazodone",
+        "alprazolam", "lorazepam", "clonazepam", "diazepam",
+        "quetiapine", "aripiprazole", "olanzapine", "risperidone"
+      ],
+      "brands": [
+        "Zoloft", "Prozac", "Lexapro", "Paxil",
+        "Effexor", "Wellbutrin", "Remeron", "Desyrel",
+        "Xanax", "Ativan", "Klonopin", "Valium",
+        "Seroquel", "Abilify", "Zyprexa", "Risperdal"
+      ]
+    },
+    "antibiotics": {
+      "names": [
+        "amoxicillin", "azithromycin", "ciprofloxacin", "levofloxacin",
+        "doxycycline", "metronidazole", "clindamycin", "vancomycin",
+        "cephalexin", "ceftriaxone", "trimethoprim-sulfamethoxazole"
+      ],
+      "brands": [
+        "Amoxil", "Zithromax", "Z-Pack", "Cipro", "Levaquin",
+        "Vibramycin", "Flagyl", "Cleocin", "Vancocin",
+        "Keflex", "Rocephin", "Bactrim", "Septra"
+      ]
+    },
+    "gi_drugs": {
+      "names": [
+        "omeprazole", "pantoprazole", "esomeprazole", "lansoprazole",
+        "famotidine", "ranitidine", "ondansetron", "metoclopramide"
+      ],
+      "brands": [
+        "Prilosec", "Protonix", "Nexium", "Prevacid",
+        "Pepcid", "Zantac", "Zofran", "Reglan"
+      ]
+    },
+    "thyroid": {
+      "names": ["levothyroxine", "liothyronine", "methimazole", "propylthiouracil"],
+      "brands": ["Synthroid", "Levoxyl", "Cytomel", "Tapazole"]
+    },
+    "osteoporosis": {
+      "names": [
+        "alendronate", "risedronate", "ibandronate", "zoledronic acid",
+        "denosumab", "teriparatide", "raloxifene"
+      ],
+      "brands": [
+        "Fosamax", "Actonel", "Boniva", "Reclast",
+        "Prolia", "Forteo", "Evista"
+      ]
+    }
+  }
+}

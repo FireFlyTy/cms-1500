@@ -4,7 +4,7 @@ import {
   CheckCircle, Clock, AlertCircle, X, Eye, Edit, Folder, File,
   Code, Tag, BookOpen, Layers, ExternalLink, Upload, RefreshCw,
   ZoomIn, ZoomOut, ChevronLeft, Hash, Play, Loader2, Filter, FolderSearch,
-  Zap, Shield
+  Zap, Shield, Trash2
 } from 'lucide-react';
 import RuleGeneration from './components/RuleGeneration';
 import ClaimRules from './components/ClaimRules';
@@ -1090,86 +1090,66 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, codeToExpand, onClo
                           ? document.pages?.filter(p => p.topics?.some(t => (typeof t === 'string' ? t : t.name) === topicName)).map(p => p.page) || []
                           : topicInfo.pages || [];
                         const topicAnchors = typeof topicInfo === 'string' ? [] : topicInfo.anchors || [];
+                        const isExpanded = expandedTopic === topicName;
 
                         return (
                           <div key={i} className="border rounded">
                             <button
-                              onClick={() => setExpandedTopic(expandedTopic === topicName ? null : topicName)}
+                              onClick={() => setExpandedTopic(isExpanded ? null : topicName)}
                               className="w-full px-3 py-2 flex items-center justify-between hover:bg-gray-50 text-left"
                             >
-                              <span className="text-sm">{topicName}</span>
                               <div className="flex items-center gap-2">
-                                <span className="text-xs text-gray-400">{topicPages.length} pages</span>
-                                {topicAnchors.length > 0 && <span className="text-yellow-500 text-xs">•</span>}
-                                <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${expandedTopic === topicName ? 'rotate-180' : ''}`} />
+                                <ChevronRight className={`w-3 h-3 text-gray-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                                <span className="text-sm">{topicName}</span>
                               </div>
+                              <span className="text-xs text-gray-400">{topicPages.length} pages</span>
                             </button>
-                            {/* Page buttons */}
-                            {topicPages.length > 0 && (
-                              <div className="px-3 py-1.5 border-t bg-gray-50/50 flex flex-wrap gap-1">
-                                {topicPages.map(pageNum => {
+                            {/* Expanded: pages list */}
+                            {isExpanded && topicPages.length > 0 && (
+                              <div className="px-4 pb-2 space-y-1">
+                                {topicPages.map((pageNum, idx) => {
                                   const anchor = topicAnchors.find(a => a.page === pageNum);
-                                  const anchorText = anchor?.text || anchor?.start;
-                                  const hasAnchor = !!anchorText;
-                                  // Build search text: use range format if we have start+end
+                                  const hasAnchor = !!(anchor?.text || anchor?.start);
                                   const searchValue = anchor?.start && anchor?.end
                                     ? `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`
-                                    : anchorText;
-                                  return (
-                                    <button
-                                      key={pageNum}
-                                      onClick={() => {
-                                        setSelectedPage(pageNum);
-                                        if (searchValue) {
-                                          setSearchText(searchValue);
-                                        } else {
-                                          setSearchText(topicName);
-                                        }
-                                      }}
-                                      title={hasAnchor ? `📍 "${anchorText}"` : `Search for "${topicName}"`}
-                                      className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                                        selectedPage === pageNum
-                                          ? 'bg-blue-600 text-white'
-                                          : hasAnchor
-                                            ? 'bg-yellow-50 border border-yellow-300 hover:bg-yellow-100'
-                                            : 'bg-white border hover:bg-blue-50'
-                                      }`}
-                                    >
-                                      p.{pageNum}
-                                      {hasAnchor && <span className="ml-1 text-yellow-600">•</span>}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )}
-                            {/* Expanded: show citations */}
-                            {expandedTopic === topicName && topicAnchors.length > 0 && (
-                              <div className="px-3 py-2 bg-blue-50 border-t space-y-1">
-                                <p className="text-xs font-medium text-blue-600">Citations:</p>
-                                {topicAnchors.map((anchor, idx) => {
-                                  const anchorText = anchor.text || anchor.start;
-                                  const displayText = anchor.start && anchor.end
-                                    ? `"${anchor.start}" ... "${anchor.end}"`
-                                    : anchor.start
-                                      ? `"${anchor.start}"`
-                                      : anchor.text
-                                        ? `"${anchor.text}"`
-                                        : '';
-                                  // Build search text: use range format if we have start+end
-                                  const searchValue = anchor.start && anchor.end
-                                    ? `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`
-                                    : anchorText;
+                                    : anchor?.text || anchor?.start || topicName;
+                                  const displayText = anchor?.text
+                                    ? `"${anchor.text}"`
+                                    : anchor?.start && anchor?.end
+                                      ? `"${anchor.start}" ... "${anchor.end}"`
+                                      : null;
+
+                                  const isCurrentPage = pageNum === selectedPage;
+
                                   return (
                                     <button
                                       key={idx}
                                       onClick={() => {
-                                        setSelectedPage(anchor.page);
+                                        setSelectedPage(pageNum);
                                         setSearchText(searchValue);
                                       }}
-                                      className="block w-full text-left text-xs px-2 py-1 rounded bg-white border border-blue-200 hover:bg-blue-100 transition-colors"
+                                      className={`w-full text-left px-2 py-1.5 rounded transition-colors group/page ${
+                                        isCurrentPage
+                                          ? 'bg-blue-100 border border-blue-300'
+                                          : 'hover:bg-blue-50'
+                                      }`}
                                     >
-                                      <span className="text-gray-400">p.{anchor.page}:</span>{' '}
-                                      <span className="text-gray-700">{displayText}</span>
+                                      <div className="flex items-center gap-2">
+                                        <span className={`text-xs font-medium group-hover/page:underline ${
+                                          isCurrentPage ? 'text-blue-700' : 'text-blue-600'
+                                        }`}>
+                                          Page {pageNum}
+                                        </span>
+                                        {hasAnchor && <span className="text-yellow-500 text-xs">•</span>}
+                                        <ChevronRight className={`w-3 h-3 ml-auto ${
+                                          isCurrentPage ? 'text-blue-500' : 'text-gray-300 group-hover/page:text-blue-400'
+                                        }`} />
+                                      </div>
+                                      {displayText && (
+                                        <p className="text-xs text-gray-500 truncate mt-0.5 italic">
+                                          {displayText}
+                                        </p>
+                                      )}
                                     </button>
                                   );
                                 })}
@@ -1197,86 +1177,66 @@ const DocumentViewer = ({ docId, initialPage, highlightCode, codeToExpand, onClo
                           ? document.pages?.filter(p => p.medications?.some(m => (typeof m === 'string' ? m : m.name) === medName)).map(p => p.page) || []
                           : medInfo.pages || [];
                         const medAnchors = typeof medInfo === 'string' ? [] : medInfo.anchors || [];
+                        const isExpanded = expandedMed === medName;
 
                         return (
                           <div key={i} className="border rounded">
                             <button
-                              onClick={() => setExpandedMed(expandedMed === medName ? null : medName)}
+                              onClick={() => setExpandedMed(isExpanded ? null : medName)}
                               className="w-full px-3 py-2 flex items-center justify-between hover:bg-gray-50 text-left"
                             >
-                              <span className="text-sm font-medium text-emerald-700">{medName}</span>
                               <div className="flex items-center gap-2">
-                                <span className="text-xs text-gray-400">{medPages.length} pages</span>
-                                {medAnchors.length > 0 && <span className="text-yellow-500 text-xs">•</span>}
-                                <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${expandedMed === medName ? 'rotate-180' : ''}`} />
+                                <ChevronRight className={`w-3 h-3 text-gray-400 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                                <span className="text-sm font-medium text-emerald-700">{medName}</span>
                               </div>
+                              <span className="text-xs text-gray-400">{medPages.length} pages</span>
                             </button>
-                            {/* Page buttons */}
-                            {medPages.length > 0 && (
-                              <div className="px-3 py-1.5 border-t bg-gray-50/50 flex flex-wrap gap-1">
-                                {medPages.map(pageNum => {
+                            {/* Expanded: pages list */}
+                            {isExpanded && medPages.length > 0 && (
+                              <div className="px-4 pb-2 space-y-1">
+                                {medPages.map((pageNum, idx) => {
                                   const anchor = medAnchors.find(a => a.page === pageNum);
-                                  const anchorText = anchor?.text || anchor?.start;
-                                  const hasAnchor = !!anchorText;
-                                  // Build search text: use range format if we have start+end
+                                  const hasAnchor = !!(anchor?.text || anchor?.start);
                                   const searchValue = anchor?.start && anchor?.end
                                     ? `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`
-                                    : anchorText;
-                                  return (
-                                    <button
-                                      key={pageNum}
-                                      onClick={() => {
-                                        setSelectedPage(pageNum);
-                                        if (searchValue) {
-                                          setSearchText(searchValue);
-                                        } else {
-                                          setSearchText(medName);
-                                        }
-                                      }}
-                                      title={hasAnchor ? `📍 "${anchorText}"` : `Search for "${medName}"`}
-                                      className={`px-2 py-0.5 text-xs rounded transition-colors ${
-                                        selectedPage === pageNum
-                                          ? 'bg-blue-600 text-white'
-                                          : hasAnchor
-                                            ? 'bg-yellow-50 border border-yellow-300 hover:bg-yellow-100'
-                                            : 'bg-white border hover:bg-blue-50'
-                                      }`}
-                                    >
-                                      p.{pageNum}
-                                      {hasAnchor && <span className="ml-1 text-yellow-600">•</span>}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )}
-                            {/* Expanded: show citations */}
-                            {expandedMed === medName && medAnchors.length > 0 && (
-                              <div className="px-3 py-2 bg-emerald-50 border-t space-y-1">
-                                <p className="text-xs font-medium text-emerald-600">Citations:</p>
-                                {medAnchors.map((anchor, idx) => {
-                                  const anchorText = anchor.text || anchor.start;
-                                  const displayText = anchor.start && anchor.end
-                                    ? `"${anchor.start}" ... "${anchor.end}"`
-                                    : anchor.start
-                                      ? `"${anchor.start}"`
-                                      : anchor.text
-                                        ? `"${anchor.text}"`
-                                        : '';
-                                  // Build search text: use range format if we have start+end
-                                  const searchValue = anchor.start && anchor.end
-                                    ? `[RANGE]${anchor.start}|||${anchor.end}[/RANGE]`
-                                    : anchorText;
+                                    : anchor?.text || anchor?.start || medName;
+                                  const displayText = anchor?.text
+                                    ? `"${anchor.text}"`
+                                    : anchor?.start && anchor?.end
+                                      ? `"${anchor.start}" ... "${anchor.end}"`
+                                      : null;
+
+                                  const isCurrentPage = pageNum === selectedPage;
+
                                   return (
                                     <button
                                       key={idx}
                                       onClick={() => {
-                                        setSelectedPage(anchor.page);
+                                        setSelectedPage(pageNum);
                                         setSearchText(searchValue);
                                       }}
-                                      className="block w-full text-left text-xs px-2 py-1 rounded bg-white border border-emerald-200 hover:bg-emerald-100 transition-colors"
+                                      className={`w-full text-left px-2 py-1.5 rounded transition-colors group/page ${
+                                        isCurrentPage
+                                          ? 'bg-emerald-100 border border-emerald-300'
+                                          : 'hover:bg-emerald-50'
+                                      }`}
                                     >
-                                      <span className="text-gray-400">p.{anchor.page}:</span>{' '}
-                                      <span className="text-gray-700">{displayText}</span>
+                                      <div className="flex items-center gap-2">
+                                        <span className={`text-xs font-medium group-hover/page:underline ${
+                                          isCurrentPage ? 'text-emerald-700' : 'text-emerald-600'
+                                        }`}>
+                                          Page {pageNum}
+                                        </span>
+                                        {hasAnchor && <span className="text-yellow-500 text-xs">•</span>}
+                                        <ChevronRight className={`w-3 h-3 ml-auto ${
+                                          isCurrentPage ? 'text-emerald-500' : 'text-gray-300 group-hover/page:text-emerald-400'
+                                        }`} />
+                                      </div>
+                                      {displayText && (
+                                        <p className="text-xs text-gray-500 truncate mt-0.5 italic">
+                                          {displayText}
+                                        </p>
+                                      )}
                                     </button>
                                   );
                                 })}
@@ -1731,6 +1691,7 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
   const [expandedFolders, setExpandedFolders] = useState(folders);
   const [parsing, setParsing] = useState(null);
   const [parseProgress, setParseProgress] = useState({}); // {docId: {percent, message}}
+  const [deleting, setDeleting] = useState(null); // docId being deleted
 
   const toggleFolder = (folder) => {
     setExpandedFolders(prev =>
@@ -1821,6 +1782,34 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
         delete next[docId];
         return next;
       });
+    }
+  };
+
+  const handleDelete = async (e, docId, filename) => {
+    e.stopPropagation();
+    if (isGlobalParsing || deleting) return;
+
+    if (!window.confirm(`Delete "${filename}"?\n\nThis will remove the document from the database. The source PDF will be preserved.`)) {
+      return;
+    }
+
+    setDeleting(docId);
+    try {
+      const res = await fetch(`${API_BASE}/documents/${docId}`, {
+        method: 'DELETE'
+      });
+
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.detail || 'Delete failed');
+      }
+
+      onRefresh?.();
+    } catch (err) {
+      console.error('Delete failed:', err);
+      alert(`Failed to delete: ${err.message}`);
+    } finally {
+      setDeleting(null);
     }
   };
 
@@ -1968,6 +1957,17 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                                 >
                                   <RefreshCw className="w-3 h-3" />
                                 </button>
+                                <button
+                                  onClick={(e) => handleDelete(e, doc.id, doc.filename)}
+                                  disabled={isGlobalParsing || deleting === doc.id}
+                                  className="px-2 py-1 text-xs rounded-lg flex items-center gap-1 transition-colors disabled:opacity-30"
+                                  style={{ color: '#dc2626', border: '1px solid #fecaca' }}
+                                  onMouseEnter={(e) => !isGlobalParsing && (e.currentTarget.style.background = '#fef2f2')}
+                                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                  title="Delete document"
+                                >
+                                  {deleting === doc.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                                </button>
                               </>
                             ) : null}
                           </>
@@ -2003,6 +2003,17 @@ const DocumentList = ({ documents, onDocumentClick, onCodeClick, onRefresh, sele
                                 >
                                   <Zap className="w-3 h-3" />
                                   Parse
+                                </button>
+                                <button
+                                  onClick={(e) => handleDelete(e, doc.id, doc.filename)}
+                                  disabled={isGlobalParsing || deleting === doc.id}
+                                  className="px-2 py-1 text-xs rounded-lg flex items-center gap-1 transition-colors disabled:opacity-30"
+                                  style={{ color: '#dc2626', border: '1px solid #fecaca' }}
+                                  onMouseEnter={(e) => !isGlobalParsing && (e.currentTarget.style.background = '#fef2f2')}
+                                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                  title="Delete document"
+                                >
+                                  {deleting === doc.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
                                 </button>
                               </>
                             )}
