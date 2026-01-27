@@ -107,7 +107,7 @@ def has_descendants(code: str, code_type: str = "ICD-10") -> bool:
     """
     import sqlite3
 
-    db_path = os.path.join(BASE_DIR, "reference.db")
+    db_path = os.path.join(BASE_DIR, "data", "db", "reference.db")
     if not os.path.exists(db_path):
         # Fallback: assume codes with fewer characters have descendants
         # E11 → has descendants, E11.65 → likely leaf
