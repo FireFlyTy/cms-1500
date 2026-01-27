@@ -59,6 +59,36 @@ Evaluate EACH parent rule against THIS child code:
    - Child has specific requirements not in parent
    - Source documents mention criteria specific to this code
 
+## MEDICAL RELEVANCE CHECK (MANDATORY)
+
+Before applying ANY parent rule, verify: **Does this rule make MEDICAL SENSE for this child code?**
+
+Example - Parent E (Endocrine Chapter E00-E89):
+- E contains rules for: Diabetes (E08-E13), Thyroid (E00-E07), Obesity (E66)
+- Child E00 = Congenital iodine-deficiency syndrome (THYROID condition)
+- Child E11 = Type 2 diabetes mellitus (DIABETES condition)
+
+✅ E00 should KEEP: thyroid rules, general coding rules
+❌ E00 should DROP: diabetes rules, obesity rules (DIFFERENT conditions!)
+
+✅ E11 should KEEP: diabetes rules, general coding rules
+❌ E11 should DROP: thyroid rules, obesity rules (DIFFERENT conditions!)
+
+**CRITICAL**: If parent rule mentions codes/conditions OUTSIDE the child's medical scope → DROP
+
+**DO NOT create "exclusion" rules between UNRELATED conditions!**
+Patients CAN have multiple independent diagnoses (e.g., diabetes AND iodine deficiency).
+
+## SCOPE DECLARATION (REQUIRED in output)
+
+```
+## RULE SCOPE
+Code: {code}
+Medical condition: {condition name from code description}
+Applicable to: {code} and sub-codes
+NOT applicable to: {list unrelated conditions from parent that were dropped}
+```
+
 ## OUTPUT REQUIREMENTS
 
 1. **INHERITANCE ANALYSIS** (required section):
@@ -81,58 +111,93 @@ If NO parent rule is provided → generate complete standalone rule.
 '''
 
 # ---------------------------------------------------------
+# DESCENDANT-AWARE INSTRUCTIONS (added dynamically based on code level)
+# ---------------------------------------------------------
+DESCENDANT_INSTRUCTIONS = '''
+=== DESCENDANT-AWARE GENERATION ===
+
+This code HAS DESCENDANTS (child codes that will inherit from it).
+
+**Your responsibility:**
+- Extract rules specific to THIS code ($code)
+- ALSO consider what rules descendants will need
+- Include cross-chapter interaction rules that descendants might encounter
+
+**Example:** If generating E00 (iodine deficiency category):
+- E00.0, E00.1, E00.2, E00.9 will inherit your rules
+- Include sequencing rules with other chapters (if patient is pregnant, etc.)
+- Include any rules that apply to the entire E00 family
+
+**Do NOT skip rules** just because they seem "too general" — descendants need them.
+'''
+
+LEAF_CODE_INSTRUCTIONS = '''
+=== LEAF CODE GENERATION ===
+
+This code has NO DESCENDANTS (it is the most specific level).
+
+**Your responsibility:**
+- Focus ONLY on rules specific to THIS code ($code)
+- Inherit from parent — most rules should come from parent
+- Add only what is UNIQUE to this specific code
+
+**Typical output:** If parent rules fully cover this code:
+- Output: "## STATUS: SAME_AS_PARENT"
+
+**Add new rules only if:**
+- Source documents mention THIS specific code with unique criteria
+- There are Excludes/Includes notes specific to THIS code
+- There are sequencing rules specific to THIS code
+'''
+
+# ---------------------------------------------------------
 # SHARED: CMS-1500 INHERITANCE RULES
 # ---------------------------------------------------------
 CMS_INHERITANCE_RULES = '''
-=== CMS-1500 INHERITANCE STRATEGY (SELECTIVE) ===
+=== CMS-1500 RULE GENERATION STRATEGY ===
 
-**IMPORTANT**: The runtime executes ONLY this file. Rules must be COMPLETE but RELEVANT.
+**IMPORTANT**: The runtime executes ONLY this file. Rules must be COMPLETE and RELEVANT.
 
-**CRITICAL**: Parent CMS-1500 rules come from a BROADER category. NOT ALL apply to every child!
+## RULE SOURCES (in order of priority)
 
-## DISPOSITION FOR EACH PARENT RULE
+1. **GUIDELINE RULE** (PRIMARY) — the foundation for this code's rules
+2. **PARENT CMS-1500 RULE** (SECONDARY) — may enrich if no contradiction
+3. **NCCI EDITS** — bundling and unit limits from database
+
+## GENERATION ORDER
+
+1. **ANALYZE GUIDELINE RULES FIRST**
+   - Guideline is your PRIMARY source
+   - Check EACH guideline rule: can it be validated from CMS-1500 claim data?
+   - TRY HARD to keep rules — use any available field
+   - Mark as [NEW from guideline]
+
+2. **THEN ANALYZE PARENT RULES (if exists)**
+   - Parent rules are SECONDARY — they enrich, not replace
+   - For EACH parent rule, check TWO criteria:
+     a) Does NOT contradict any guideline rule
+     b) ADDS VALUE beyond what guideline already provides
+   - If both criteria met → KEEP or SPECIALIZE
+   - If contradiction OR no added value → DROP
+   - Mark kept rules as [INHERITED from {parent}]
+
+3. **ADD NCCI EDITS**
+   - Include bundling (PTP) and unit limits (MUE) for THIS code
+   - Mark as [NCCI]
+
+## PARENT RULE DISPOSITION
 
 | Disposition | When to Use | Mark As |
 |-------------|-------------|---------|
-| **KEEP** | Parent rule applies to this child unchanged | [INHERITED from {parent}] |
-| **SPECIALIZE** | Parent rule needs refinement for this child | [SPECIALIZED from {parent}] |
-| **DROP** | Parent rule is for a DIFFERENT condition | (omit entirely) |
+| **KEEP** | No contradiction + adds value | [INHERITED from {parent}] |
+| **SPECIALIZE** | Applies but needs modification | [SPECIALIZED from {parent}] |
+| **DROP** | Contradicts guideline OR no added value | (omit entirely) |
 
-## RULE INHERITANCE ORDER
-
-1. **ANALYZE PARENT CMS-1500 RULES**
-   - For EACH parent rule, determine: KEEP, SPECIALIZE, or DROP
-   - DROP if rule mentions codes/conditions outside this child's scope
-   - Example: Parent E has diabetes bundling rules → DROP for E00 (iodine deficiency)
-
-2. **INCLUDE KEPT/SPECIALIZED RULES**
-   - Copy rules marked KEEP with [INHERITED from {parent}]
-   - Modify rules marked SPECIALIZE with [SPECIALIZED from {parent}]
-
-3. **ADD NEW RULES FROM THIS CODE'S GUIDELINE**
-   - Convert THIS code's guideline criteria to CMS-1500 rules
-   - Mark each as [NEW from guideline]
-
-4. **ADD NCCI EDITS FOR THIS CODE**
-   - Include bundling (PTP) and unit limits (MUE) specific to THIS code
-   - Mark each as [NCCI]
-
-## OUTPUT REQUIREMENTS
-
-1. **ANALYSIS OF PARENT RULES** (required section):
-   ```
-   | # | Parent Rule ID | Summary | Disposition | Reason |
-   |---|----------------|---------|-------------|--------|
-   | 1 | E-DIAG-001 | Diabetes sequencing | DROP | E00.2 is not diabetes |
-   | 2 | E-DOC-001 | Provider documentation | KEEP | Universal requirement |
-   ```
-
-2. **SAME_AS_PARENT CHECK**:
-   - If ALL parent rules KEEP + no new rules from guideline + no NCCI:
-   - Output ONLY: "## STATUS: SAME_AS_PARENT"
+## KEY POINTS
 
 ⚠️ WRONG: Keep diabetes rules for non-diabetes codes
-✓ RIGHT: DROP irrelevant parent rules, KEEP only applicable ones
+⚠️ WRONG: Keep parent rule that duplicates guideline rule (no added value)
+✓ RIGHT: Guideline first, parent enriches only if relevant
 
 If NO parent CMS-1500 rule → generate from guideline + NCCI only.
 '''
@@ -225,7 +290,22 @@ You are provided with MULTIPLE source documents. Use ONLY sources that are DIREC
 - Do NOT repeat the same quote - find NEW supporting text
 
 **UNUSED SOURCES:**
-Document ALL skipped sources in SOURCE EXTRACTION LOG with specific reason (e.g., "ODG_Diabetes not used: E00.2 is iodine deficiency syndrome, not diabetes")
+Document ALL skipped sources in SOURCE EXTRACTION LOG with specific reason (e.g., "source about diabetes management - not applicable to iodine deficiency syndrome")
+
+=== MEDICAL RELEVANCE REQUIREMENT ===
+
+You are generating rules for: $code ($description)
+
+**CRITICAL CHECK before creating ANY rule:**
+1. Is the source discussing the SAME medical condition as $code?
+2. If source discusses diabetes but $code is thyroid condition → source is NOT APPLICABLE
+3. If source discusses obesity but $code is diabetes → source is NOT APPLICABLE
+
+**DO NOT create "exclusion" rules between UNRELATED conditions!**
+- WRONG: "E00.2 cannot be billed with diabetes codes E08-E13" (iodine deficiency and diabetes are INDEPENDENT)
+- RIGHT: Only create exclusion rules based on EXPLICIT Excludes1/Excludes2 notes in ICD-10 manual
+
+Patients CAN have multiple independent diagnoses. Do not invent conflicts that don't exist in official guidelines.
 
 CRITICAL: You must extract text VERBATIM. Do not correct typos, do not fix spacing.
 
@@ -251,9 +331,20 @@ List detailed acceptance and rejection criteria. Use bullet points.
 
 ## 3. INSTRUCTIONS
 Write the validation logic in strict pseudo-code steps.
-*Format:* 
+*Format:*
 - **IF** <Condition> **THEN** <Action> [x]
 - **CHECK** <Document> **FOR** <Specific Data> [x]
+
+**CRITICAL: CRITERIA → INSTRUCTIONS mapping**
+Every rule in CRITERIA (EXCLUSION, SEQUENCING) MUST have a corresponding IF/THEN instruction here.
+
+| CRITERIA | INSTRUCTIONS |
+|----------|--------------|
+| EXCLUSION: Gestational Diabetes → O24.4, not Chapter E | IF gestational diabetes THEN use O24.4, NOT E-codes |
+| SEQUENCING: Pregnancy → O24 first, then E08-E13 | IF pregnant + condition THEN sequence O24 first |
+| EXCLUSION: Incidental pregnancy → Z33.1 | IF pregnancy is incidental THEN use Z33.1, not Chapter 15 |
+
+Do NOT leave any CRITERIA rule without an actionable IF/THEN instruction!
 
 ## 4. REFERENCE
 Output citations EXACTLY as they appear in the source.
@@ -310,6 +401,176 @@ Do not evaluate your work. Just list findings.
 6. **Code First Notes Found**: <List with [doc_id] Page numbers or "None">
 7. **Total Unique Citations Created**: <Count>
 8. **Page Number Verification**: Confirm all page numbers are from "## Page N" markers
+
+!!! STOP INSTRUCTION !!!
+DO NOT provide a verdict. This is a DRAFT.
+start answer with # ANSWER
+''')
+
+
+# ---------------------------------------------------------
+# STEP 1B: META-CATEGORY DRAFT GENERATION
+# ---------------------------------------------------------
+PROMPT_META_CATEGORY_DRAFT = Template('''
+You are a Forensic Medical Auditor and Data Extractor. Your task is to create validation rules
+for a META-CATEGORY code that will be inherited by ALL codes in this category.
+
+''' + PAGE_IDENTIFICATION_RULE_MULTI + '''
+
+=== META-CATEGORY SCOPE ===
+
+You are generating rules for: $code ($description)
+Code type: $code_type
+
+This is a META-CATEGORY (root level). Rules you create will be inherited
+through the hierarchy chain.
+
+**Example hierarchy (ICD-10):**
+```
+E (meta-category, YOU ARE HERE)
+  ├── E00 (category: iodine deficiency)
+  │     ├── E00.0 (subcategory)
+  │     ├── E00.1
+  │     └── E00.9
+  ├── E03 (category: hypothyroidism)
+  │     ├── E03.0
+  │     └── E03.9
+  └── E11 (category: type 2 diabetes)
+        ├── E11.2
+        ├── E11.6
+        │     └── E11.65
+        └── E11.9
+```
+
+**Inheritance flow:**
+- Rules you create at $code → inherited by ALL descendants
+- Each descendant filters by medical relevance (E00 keeps thyroid, drops diabetes; E11 keeps diabetes, drops thyroid)
+- Missing rule at $code = missing for ENTIRE hierarchy below
+
+**YOUR GOAL: Extract ALL rules that ANY code in this category might need.**
+
+=== COMPREHENSIVE EXTRACTION REQUIRED ===
+
+1. **Cross-chapter/cross-category rules** (MANDATORY)
+   - Search source documents for sequencing rules with OTHER chapters/categories
+   - Extract rules about how codes from THIS category interact with codes from OTHER categories
+   - Include ALL such rules found in source documents
+
+2. **Universal coding rules**
+   - Documentation requirements
+   - Reporting limits (once per encounter, units, etc.)
+   - Conditional coding (borderline, impending, suspected, etc.)
+   - Timing/status indicators if applicable
+
+3. **Category-wide rules for ALL sub-conditions**
+   - Do NOT filter by one sub-condition
+   - Include rules for EVERY condition type in this category
+   - Descendants will filter by their medical relevance
+
+**CRITICAL**:
+- Do NOT skip rules because they seem specific to one sub-condition
+- Descendants will inherit and filter by relevance
+- Missing rule here = missing for ALL descendants below
+
+INPUT DATA:
+Source Documents:
+$sources
+-----
+Code for validation:
+$code
+Code Type:
+$code_type
+Official Description:
+$description
+
+OBJECTIVE:
+Analyze ALL provided source documents to extract COMPREHENSIVE rules for this meta-category.
+
+=== SOURCE USAGE REQUIREMENT ===
+
+**For meta-category, you must be INCLUSIVE:**
+- Extract rules for ALL condition types in this category
+- Include rules that mention ANY code in this category range
+- Include cross-chapter interaction rules
+
+**WHEN TO USE A SOURCE:**
+- It mentions ANY code in this meta-category range
+- It contains sequencing/interaction rules with other chapters
+- It has universal coding guidelines applicable to this category
+- It defines criteria for ANY condition type in this category
+
+**UNUSED SOURCES:**
+Document ALL skipped sources in SOURCE EXTRACTION LOG with specific reason.
+
+CRITICAL: You must extract text VERBATIM. Do not correct typos, do not fix spacing.
+
+CITATION PROTOCOL:
+1. **Every single factual statement** in Sections 1, 2, and 3 MUST be followed by a citation index in brackets, e.g., `[1]`, `[2]`.
+2. These indices must correspond EXACTLY to the numbered list in **Section 4: REFERENCE**.
+3. Do not output a statement without a reference number.
+4. **Page numbers in citations MUST come from "## Page N" markers, NOT from printed numbers in content.**
+5. **Every citation MUST include the doc_id to identify the source document.**
+
+OUTPUT SECTIONS:
+Return exactly 5 sections using MARKDOWN formatting.
+
+## 1. SUMMARY
+Summarize the guidelines for this meta-category, covering ALL condition types.
+*Format:* <Summary Sentence> [1]. <Next Sentence> [2].
+
+## 2. CRITERIA
+List criteria for ALL condition types in this category. Use bullet points.
+- **INCLUSION**: Conditions that validate codes in this category. [x]
+- **EXCLUSION**: Conditions or codes that are excluded (Excludes1, Excludes2). [x]
+- **SEQUENCING**: Cross-chapter sequencing rules, "Code First", "Use Additional Code". [x]
+
+## 3. INSTRUCTIONS
+Write validation logic covering ALL condition types.
+*Format:*
+- **IF** <Condition> **THEN** <Action> [x]
+- **CHECK** <Document> **FOR** <Specific Data> [x]
+
+**CRITICAL: CRITERIA → INSTRUCTIONS mapping**
+Every rule in CRITERIA (EXCLUSION, SEQUENCING) MUST have a corresponding IF/THEN instruction here.
+
+| CRITERIA | INSTRUCTIONS |
+|----------|--------------|
+| EXCLUSION: Gestational Diabetes → O24.4, not Chapter E | IF gestational diabetes THEN use O24.4, NOT E-codes |
+| SEQUENCING: Pregnancy → O24 first, then E08-E13 | IF pregnant + condition THEN sequence O24 first |
+| EXCLUSION: Incidental pregnancy → Z33.1 | IF pregnancy is incidental THEN use Z33.1, not Chapter 15 |
+
+Do NOT leave any CRITERIA rule without an actionable IF/THEN instruction!
+This is especially important for META-CATEGORIES where cross-chapter rules must be actionable.
+
+## 4. REFERENCE
+Output citations EXACTLY as they appear in the source.
+
+**Format:**
+1. [doc_id] Page <SINGLE_NUMBER>. `<RAW_STRING_FROM_SOURCE>`
+2. [doc_id] Page <SINGLE_NUMBER>. `<RAW_STRING_FROM_SOURCE>`
+
+**RULES:**
+- doc_id MUST be from [doc_id: <ID>] in the SOURCE header
+- Page number MUST be from "## Page N" marker
+- ONE citation = ONE doc_id + ONE page number
+
+**EXTRACTION RULE:**
+Copy text character-by-character. Preserve typos, spacing, punctuation.
+
+## 5. SOURCE EXTRACTION LOG (Fact Check)
+1. **Documents Analyzed**: <List all doc_ids and filenames>
+2. **USED SOURCES** (with citations):
+   - [doc_id_1]: <count> citations
+     * Page X: <brief description>
+   - [doc_id_2]: ...
+3. **UNUSED SOURCES** (REQUIRED for every source not cited):
+   - [doc_id]: NOT RELEVANT because: <specific reason>
+4. **Citation Distribution**:
+   - Multiple pages per document? [YES/NO]
+   - Multiple locations per page? [YES/NO]
+5. **Cross-Chapter Rules Found**: <List with page numbers or "None">
+6. **Condition Types Covered**: <List all condition types included>
+7. **Total Unique Citations Created**: <Count>
 
 !!! STOP INSTRUCTION !!!
 DO NOT provide a verdict. This is a DRAFT.
@@ -376,6 +637,25 @@ OUTPUT SECTIONS (MARKDOWN):
 - List all doc_ids from input sources
 - For each: Was it cited? How many times?
 - Flag any source that was provided but NOT cited (potential gap)
+
+## 3A. MEDICAL RELEVANCE AUDIT
+Check if ALL rules in the DRAFT are medically appropriate for the target code:
+
+**For EACH rule in CRITERIA and INSTRUCTIONS:**
+1. Does the rule address the condition that the target code ACTUALLY represents?
+2. If rule mentions other codes (e.g., E08-E13), is there a REAL medical relationship?
+3. Are citations from sources that are RELEVANT to this code's condition?
+
+**RED FLAGS (report as MEDICAL_MISMATCH):**
+- Rule about diabetes for a non-diabetes code (e.g., E00 = iodine deficiency)
+- Rule about obesity for a non-obesity code
+- "Exclusion" rules claiming code X "cannot be billed with" unrelated codes
+- Citations from documents about UNRELATED conditions
+
+**If issues found:**
+- **[MEDICAL_MISMATCH]**: Rule "{rule text}" is about {other condition}, but target code is {actual condition}
+  * *Source used:* {which citation is problematic}
+  * *Action:* Remove rule OR move source to UNUSED SOURCES
 
 ## 4. PAGE NUMBER AUDIT (INFORMATIONAL ONLY)
 - This section is for your notes only — DO NOT use it to propose FIX_PAGE
@@ -552,6 +832,32 @@ For each risk found:
 - **Risk Scenario:** <Describe a patient case where this fails>
 - **Violation:** <Exact Excludes/CodeFirst note ignored>
 - **Evidence:** [doc_id] Page <N>. `"<EXACT QUOTE FROM SOURCE>"` (N must be from ## Page marker)
+
+## 1A. MEDICAL CORRECTNESS RISKS
+
+Check if any rules would create FALSE CONFLICTS or INVALID REQUIREMENTS:
+
+**Risk Type 1: Code-Condition Mismatch**
+Does any rule treat the target code as if it were a DIFFERENT condition?
+- E.g., diabetes rules applied to thyroid code (E00 = iodine deficiency)
+- E.g., obesity rules applied to diabetes code
+
+**Risk Type 2: False Exclusion**
+Does any rule claim target code "cannot be billed with" codes that are actually INDEPENDENT conditions?
+- Patients CAN have multiple unrelated conditions (diabetes + iodine deficiency)
+- Only TRUE Excludes1/Excludes2 from ICD-10 manual create real conflicts
+- Check: Is the exclusion based on EXPLICIT guideline text or was it INVENTED?
+
+**Risk Type 3: Irrelevant Source Usage**
+Are citations from documents about UNRELATED conditions being used to justify rules?
+- E.g., citing diabetes management document for thyroid code
+- E.g., citing obesity guidelines for diabetes code
+
+**For each issue found:**
+- **[MEDICAL_RISK]**: "{rule text}" incorrectly applies {other condition} logic to target code ({actual condition})
+  * *Citation used:* {problematic citation}
+  * *Why wrong:* {medical explanation}
+  * *Fix:* Remove rule OR move source to UNUSED SOURCES
 
 ## 2. CROSS-REFERENCE AUDIT
 Review ONLY the pages cited in DRAFT (Section 4: REFERENCE). For any cross-references found on those pages:
@@ -797,6 +1103,21 @@ Prove that you did not ignore the Compliance Officer.
    - If (1) > (2), explicitly state WHY you rejected a safety finding
    - If (1) == (2), write "All risks addressed."
 
+## 3A. MEDICAL CORRECTNESS RECONCILIATION
+1. **Medical Relevance Issues from Mentor**: <Count of MEDICAL_MISMATCH items>
+2. **Medical Risk Issues from Red Team**: <Count of MEDICAL_RISK items>
+3. **Medical Fixes in Approved List**: <Count>
+
+**MANDATORY**: If Mentor OR Red Team flagged medical relevance issues:
+- These MUST be addressed with [BLOCK_RISK] or [CHANGE] corrections
+- Rules about UNRELATED conditions must be REMOVED
+- Citations from irrelevant sources must be moved to UNUSED SOURCES
+
+**Validation:**
+- If medical issues found BUT not addressed → STATUS = UNSAFE
+- If all medical issues addressed → write "All medical relevance issues resolved."
+- If no medical issues found → write "No medical relevance issues identified."
+
 ## 4. SOURCE COVERAGE RECONCILIATION
 1. **Total Source Documents Provided**: <Count>
 2. **Sources with Citations in DRAFT**: <Count>
@@ -820,8 +1141,10 @@ ADD_SOURCE_COUNT: <Count of source coverage fixes>
 CLARIFY_COUNT: <Count of wording fixes>
 FIX_PAGE_COUNT: <Count of page corrections>
 FIX_DOC_COUNT: <Count of doc_id corrections>
+MEDICAL_FIX_COUNT: <Count of medical relevance fixes>
 SOURCE_COVERAGE_STATUS: [ALL SOURCES USED / GAPS EXIST]
-STATUS: [SECURE / RISKY]
+MEDICAL_CORRECTNESS_STATUS: [VERIFIED / ISSUES_FOUND]
+STATUS: [SECURE / RISKY / UNSAFE]
 
 *(Select RISKY only if you rejected a safety finding without a strong Source-based reason)*
 
@@ -1064,126 +1387,80 @@ $cms1500_schema
 
 ## YOUR TASK
 
-**STEP 0: SELECTIVE INHERITANCE FROM PARENT (CRITICAL)**
+**STEP 1: ANALYZE GUIDELINE RULES (PRIMARY SOURCE)**
 
-If Parent CMS-1500 Rule exists above, apply KEEP/SPECIALIZE/DROP for EACH parent rule:
+The Guideline Rule is your PRIMARY source. Go through EACH rule/statement and evaluate:
 
-- **KEEP**: Parent rule applies to this child → copy with [INHERITED from {parent}]
-- **SPECIALIZE**: Parent rule needs refinement → modify and mark [SPECIALIZED from {parent}]
-- **DROP**: Parent rule is for a DIFFERENT condition → omit entirely (document in ANALYSIS)
+**Can this rule be validated from CMS-1500 claim data?**
 
-⚠️ DO NOT blindly copy all parent rules! Example:
-- Parent E has diabetes Z79.4 rules → DROP for E00.2 (iodine deficiency)
-- Parent E has Chapter 4 sequencing rules → KEEP for E00.2
+For each guideline rule, decide:
+- ✅ **KEEP** → CMS-1500 field can check this rule
+- ⚠️ **KEEP as WARNING** → partial check possible, flag for human review
+- ❌ **REMOVE** → requires data NOT on CMS-1500 (medical record, lab values, provider intent)
 
-**STEP 1: ADD NEW RULES FROM THIS CODE'S GUIDELINE (ABSOLUTELY MANDATORY)**
+**TRY HARD to keep rules!** Look at the CMS-1500 schema. Can you check:
+- Diagnosis codes and positions? → KEEP
+- Procedure codes and modifiers? → KEEP
+- Patient age (DOB) or gender? → KEEP
+- Place of service? → KEEP
+- Date relationships? → KEEP
 
-⛔ CRITICAL REQUIREMENT: You MUST add AT LEAST ONE new rule from THIS code's guideline.
-This is NON-NEGOTIABLE. A child code CANNOT have only inherited rules.
+If ANY field can be used → find a way to KEEP the rule.
 
-Even if parent rules exist, child codes MUST have their OWN specific rules.
-If you cannot find ANY validatable rule → you are not trying hard enough.
+**STEP 2: ANALYZE PARENT RULES (SECONDARY SOURCE)**
 
-**AGGRESSIVE RULE INCLUSION POLICY:**
+If Parent CMS-1500 Rule exists, evaluate each parent rule:
 
-Include a rule if there is ANY possibility to check it from CMS-1500 fields:
-- Can check diagnosis codes? → INCLUDE as rule
-- Can check procedure codes? → INCLUDE as rule
-- Can check modifiers? → INCLUDE as rule
-- Can check patient age/gender? → INCLUDE as rule
-- Can check place of service? → INCLUDE as rule
-- Can check date relationships? → INCLUDE as rule
-- Can check code combinations? → INCLUDE as rule
+**Two criteria for keeping a parent rule:**
+1. Does NOT contradict any guideline rule from Step 1
+2. ENRICHES the child code's rules (adds value beyond what guideline provides)
 
-**DO NOT discard rules just because they're "soft" or "warnings"!**
-- "Expected code missing" → INCLUDE as warning
-- "Unusual combination" → INCLUDE as info
-- "Typically appears with" → INCLUDE as info
+For each parent rule, decide:
+- ✅ **KEEP** → no contradiction + adds value to this code
+- ✅ **SPECIALIZE** → applies but needs modification for this specific code
+- ❌ **DROP** → contradicts guideline OR irrelevant to this condition
 
-**Severity does NOT determine inclusion** — it determines action:
-- Hard violation → severity: error, action: REJECT
-- Likely issue → severity: warning, action: WARN
-- Pattern/suggestion → severity: info, action: INFO
+Examples:
+- Parent has "diabetes must have Z79.4" but this code is iodine deficiency → DROP (irrelevant)
+- Parent has "uniqueness rule" and guideline also has it → DROP (already covered, no added value)
+- Parent has "obstetric sequencing" and guideline mentions it → KEEP (enriches with specific logic)
 
-⚠️ WRONG: "Cannot validate because requires clinical judgment" (for code-based checks)
-✓ RIGHT: Include as warning/info if ANY claim field can be checked
+⚠️ **CRITICAL:** Dropped parent rules must NOT be recreated as "new" rules!
 
-**RULE TYPES REFERENCE** — Use this to RECOGNIZE rule types in the guideline. Do NOT invent rules!
+**STEP 3: COMPILE FINAL RULES LIST**
 
-| Type | CMS-1500 Field | Guideline Pattern to Look For |
-|------|----------------|-------------------------------|
-| Uniqueness | diagnosisCodes[].code | "code may be reported only once", "do not duplicate" |
-| Sequencing | diagnosisCodes[0].code | "must be primary", "sequence first", "code first" |
-| Dx Conflicts | diagnosisCodes[].code | "mutually exclusive", "do not use with", "excludes" |
-| Expected Dx | diagnosisCodes[].code | "also assign", "use additional code", "report with" |
-| Age Check | member.dateOfBirth | "pediatric", "adult only", "age restriction" |
-| Gender Check | member.gender | "female only", "maternal record", "male only" |
-| POS Check | placeOfService | "inpatient only", "outpatient", "facility" |
-| Modifier Required | procedureCodes[].modifiers | "modifier required", "bilateral", "distinct" |
-| Unit Limits | procedureCodes[].units | "maximum units", "per day limit" |
-| Bundling | procedureCodes[].code | "bundled", "included in", "cannot bill separately" |
-| Date Logic | dateOfService | "within X days", "same date", "newborn period" |
+Based on your analysis, create the final list:
 
-⚠️ IMPORTANT: Only create rules for statements that ACTUALLY EXIST in the guideline.
-Do NOT invent rules. If the guideline doesn't mention a rule type, skip it.
+1. **From Guideline (KEPT):** Rules that passed Step 1 analysis
+2. **From Parent (KEPT/SPECIALIZED):** Rules that passed Step 2 analysis
+3. **REMOVED:** Rules that cannot be validated (with documented reasoning)
+
+**Severity assignment:**
+- Hard violation (must reject claim) → severity: error, action: REJECT
+- Likely issue (flag for review) → severity: warning, action: WARN
+- Informational (FYI) → severity: info, action: INFO
+
+---
+
+**CMS-1500 FIELDS REFERENCE:**
+
+| Field | What You Can Check |
+|-------|-------------------|
+| diagnosisCodes[].code | Diagnosis presence, duplicates, patterns |
+| diagnosisCodes[0].code | Primary diagnosis position |
+| procedureCodes[].code | Procedure presence, combinations |
+| procedureCodes[].modifiers | Modifier presence (LT, RT, 59, etc.) |
+| procedureCodes[].units | Unit counts |
+| member.dateOfBirth | Patient age, newborn detection (DOB=DOS) |
+| member.gender | Gender-specific rules (F for obstetric) |
+| placeOfService | Facility type (21=inpatient, 11=office) |
+| dateOfService | Date logic, same-day rules |
 
 NOTE: ICD-10 codes won't have Modifier/Unit/Bundling rules (those are CPT/HCPCS only).
 
-Mark each new rule as [NEW from guideline].
+**STEP 4: NCCI Integration (CPT/HCPCS only)**
 
-**STEP 2: Classification**
-
-Analyze the Guideline Rule and NCCI Edits. For each rule/statement in the guideline:
-
-Determine if the rule can be validated using ONLY the CMS-1500 fields above:
-
-1. **VALIDATABLE** → Can check from CMS-1500 fields
-   Include ALL rules where the condition can be evaluated from claim data:
-
-   **Hard Rules (severity: error)** - Auto-reject if violated:
-   - Code conflicts (mutually exclusive diagnoses)
-   - Diagnosis sequencing errors (wrong primary)
-   - NCCI bundling violations
-   - Unit limits exceeded
-   - Required modifier missing
-   - Age/gender-inappropriate codes
-
-   **Soft Rules (severity: warning)** - Flag for review:
-   - Missing "expected" codes (e.g., E11.x without Z79.x)
-   - Unusual combinations that need verification
-   - Codes that typically appear together
-
-   **Info Rules (severity: info)** - Informational only:
-   - Suggestions based on patterns
-   - Educational notes
-
-2. **NOT VALIDATABLE** → Remove ONLY if absolutely impossible
-
-   ⚠️ STRICT CRITERIA - A rule is NOT validatable ONLY if it:
-   - Requires reading FREE TEXT from medical record (not codes)
-   - Requires LAB VALUES or vital signs (not on claim)
-   - Requires knowing INTENT or REASONING behind code selection
-
-   ❌ INVALID EXCUSES for removing rules:
-   - "Requires clinical judgment" → If codes can trigger it, it's VALIDATABLE as warning
-   - "Cannot determine if temporary" → Include as warning, let human review
-   - "Soft rule" → Include as info/warning, NOT a reason to remove
-   - "Already covered by parent" → Still include, redundancy is OK
-   - "Too complex" → Simplify the condition, still include
-
-**BIAS TOWARD INCLUSION**: When in doubt, INCLUDE the rule as warning/info.
-It's better to flag something for human review than to miss a potential issue.
-
-**STEP 3: Rule Conversion**
-
-For VALIDATABLE rules, convert to structured format with:
-- Specific CMS-1500 field paths
-- Clear condition logic
-- Appropriate severity (error, warning, or info) and action (REJECT, WARN, INFO)
-
-**STEP 4: NCCI Integration**
-
-For CPT/HCPCS codes, include NCCI edits:
+For CPT/HCPCS codes, add NCCI edits from the database:
 - PTP bundling rules (code pairs that conflict)
 - MUE unit limits (max units per day/line)
 
@@ -1199,24 +1476,28 @@ For CPT/HCPCS codes, include NCCI edits:
 - **NCCI PTP**: {count} bundling edits (or "Not applicable - ICD-10 code")
 - **NCCI MUE**: Max {value} units per {day/line} (or "Not applicable")
 
-## ANALYSIS OF PARENT RULES
+## GUIDELINE RULES ANALYSIS
 
-(Skip this section if no parent CMS-1500 rule exists)
+For each guideline rule, state verdict and reasoning:
 
-List ALL rules from Parent CMS-1500 and their disposition:
+1. "{rule text}" → ✅ KEEP (field: diagnosisCodes[].code) - can count occurrences
+2. "{rule text}" → ⚠️ WARNING (field: member.gender) - partial check via gender
+3. "{rule text}" → ❌ REMOVE - requires medical record documentation
+...
 
-| # | Parent Rule ID | Parent Rule Summary | Disposition |
-|---|----------------|---------------------|-------------|
-| 1 | {E00-XXX-001} | {brief description} | INHERIT / OVERRIDE / DROP |
-| 2 | {E00-XXX-002} | {brief description} | INHERIT / OVERRIDE / DROP |
+**Summary:** {X} KEPT, {Y} WARNINGS, {Z} REMOVED
 
-- **INHERIT**: Copy to this code's rules unchanged
-- **OVERRIDE**: This code's guideline contradicts - replace with new rule
-- **DROP**: This code's guideline explicitly negates - do not include (rare)
+## PARENT RULES ANALYSIS
 
-**Parent rules to inherit**: {count}
-**Rules to override**: {count}
-**New rules from THIS guideline**: {count}
+(Skip if no parent CMS-1500 rule exists)
+
+For each parent rule, state verdict and reasoning:
+
+1. {E00-XXX-001} "{description}" → ✅ KEEP - applies to this code
+2. {E00-XXX-002} "{description}" → ❌ DROP - diabetes rule, this code is iodine deficiency
+...
+
+**Summary:** {X} KEPT, {Y} SPECIALIZED, {Z} DROPPED
 
 ## VALIDATABLE RULES
 
@@ -1249,32 +1530,33 @@ All rules including:
 
 These guideline rules CANNOT be validated from CMS-1500 claim data:
 
-| # | Original Guideline Rule | Source | Reason Not Validatable |
-|---|-------------------------|--------|------------------------|
-| 1 | "{exact text from guideline}" | [[doc_id:page]] | {specific reason: e.g., "Requires medical record to determine if type was documented"} |
-| 2 | "{exact text}" | [[doc_id:page]] | {reason} |
+1. "{exact text from guideline}" [[doc_id:page]] → Reason: {why not validatable}
+2. "{exact text}" [[doc_id:page]] → Reason: {why}
+...
 
 ## NCCI EDITS
 
-### PTP Bundling Rules (Procedure-to-Procedure)
+(For ICD-10 codes, write: "**Not applicable** - ICD-10 diagnosis code. NCCI edits apply only to CPT/HCPCS.")
+
+For CPT/HCPCS codes:
+
+**PTP Bundling Rules (Procedure-to-Procedure):**
 
 These codes CANNOT be billed together with $code on the same date of service:
 
-| Bundled Code | Modifier Override | Rationale | Action |
-|--------------|-------------------|-----------|--------|
-| {column2_code} | {Yes/No} | {rationale from DB} | {DENY_LINE / DENY_UNLESS_MODIFIER} |
+- {bundled_code}: {rationale from DB}
+  - Modifier Override: {Yes/No}
+  - Action: {DENY_LINE / DENY_UNLESS_MODIFIER}
 
-**Note**: If Modifier Override = Yes, allow if modifier 59/XE/XP/XS/XU present.
+Note: If Modifier Override = Yes, allow if modifier 59/XE/XP/XS/XU present.
 
-### MUE Unit Limit (Medically Unlikely Edits)
+**MUE Unit Limit (Medically Unlikely Edits):**
 
-- **Max Units**: {mue_value}
-- **Per**: {Line / Date of Service}
-- **Adjudication Indicator**: {1=Line, 2=DOS Policy, 3=DOS Clinical}
-- **Rationale**: {rationale from DB}
-- **Action**: DENY units exceeding {mue_value}
-
-(Or write: "**Not applicable** - $code is an ICD-10 diagnosis code. NCCI edits apply only to CPT/HCPCS procedure codes.")
+- Max Units: {mue_value}
+- Per: {Line / Date of Service}
+- Adjudication Indicator: {1=Line, 2=DOS Policy, 3=DOS Clinical}
+- Rationale: {rationale from DB}
+- Action: DENY units exceeding {mue_value}
 
 ## VALIDATION LOGIC SUMMARY
 

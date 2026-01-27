@@ -29,6 +29,9 @@ from .context_builder import build_sources_context, SourcesContext, SourceDocume
 from .core_ai import stream_gemini_generator, stream_openai_model, stream_pipeline_step
 from .prompts import (
     PROMPT_CODE_RULE_DRAFT,
+    PROMPT_META_CATEGORY_DRAFT,
+    DESCENDANT_INSTRUCTIONS,
+    LEAF_CODE_INSTRUCTIONS,
     PROMPT_CODE_RULE_VALIDATION_MENTOR,
     PROMPT_CODE_RULE_VALIDATION_REDTEAM,
     PROMPT_CODE_RULE_VALIDATION_ARBITRATION,
@@ -87,6 +90,122 @@ def parse_json_safely(text: str) -> dict:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         return {}
+
+
+def has_descendants(code: str, code_type: str = "ICD-10") -> bool:
+    """
+    Check if a code has descendants in the hierarchy.
+
+    Uses code_hierarchy table to determine if child codes exist.
+
+    Args:
+        code: The code to check (e.g., "E11", "E11.6", "E11.65")
+        code_type: Type of code (ICD-10, CPT, HCPCS)
+
+    Returns:
+        True if code has children, False if it's a leaf code
+    """
+    import sqlite3
+
+    db_path = os.path.join(BASE_DIR, "reference.db")
+    if not os.path.exists(db_path):
+        # Fallback: assume codes with fewer characters have descendants
+        # E11 → has descendants, E11.65 → likely leaf
+        if code_type == "ICD-10":
+            return len(code) < 6  # E11.65 = 6 chars
+        return len(code) < 5  # CPT/HCPCS: 5 digit codes are usually specific
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Check if any code starts with this pattern
+        cursor.execute("""
+            SELECT COUNT(*) FROM code_hierarchy
+            WHERE code_type = ?
+            AND pattern LIKE ?
+            AND pattern != ?
+        """, (code_type, f"{code}%", code))
+
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count > 0
+    except Exception:
+        # Fallback heuristic
+        if code_type == "ICD-10":
+            return len(code) < 6
+        return len(code) < 5
+
+
+def get_code_level(code: str, code_type: str = "ICD-10") -> str:
+    """
+    Determine the hierarchical level of a code.
+
+    Args:
+        code: The code (e.g., "E", "E11", "E11.6", "E11.65")
+        code_type: Type of code
+
+    Returns:
+        "meta_category" | "category" | "subcategory" | "code"
+    """
+    if code_type == "ICD-10":
+        # ICD-10: E=meta, E11=category, E11.6=subcategory, E11.65=code
+        if len(code) == 1:
+            return "meta_category"
+        elif "." not in code:
+            return "category"
+        else:
+            after_dot = code.split(".")[1]
+            if len(after_dot) == 1:
+                return "subcategory"
+            return "code"
+    elif code_type == "CPT":
+        # CPT: ranges like 99201-99215 → category; 99213 → code
+        if "-" in code:
+            return "category"
+        return "code"
+    else:
+        # HCPCS: J=meta_category, J1xxx=category, J1234=code
+        if len(code) == 1:
+            return "meta_category"
+        elif len(code) < 5:
+            return "category"
+        return "code"
+
+
+def inject_level_instructions(base_template: Template, code: str, code_type: str) -> Template:
+    """
+    Inject level-appropriate instructions into the base prompt template.
+
+    Args:
+        base_template: The base PROMPT_CODE_RULE_DRAFT template
+        code: The code being processed
+        code_type: Type of code
+
+    Returns:
+        Modified template with level-specific instructions injected
+    """
+    has_children = has_descendants(code, code_type)
+
+    # Get the template source
+    source = base_template.template
+
+    # Find injection point (after === SOURCE DOCUMENTS ===)
+    injection_point = "=== SOURCE DOCUMENTS ==="
+
+    if has_children:
+        instructions = DESCENDANT_INSTRUCTIONS.replace("$code", code)
+    else:
+        instructions = LEAF_CODE_INSTRUCTIONS.replace("$code", code)
+
+    # Inject after the source documents header intro
+    if injection_point in source:
+        parts = source.split(injection_point)
+        modified_source = parts[0] + injection_point + "\n\n" + instructions + parts[1]
+        return Template(modified_source)
+
+    # Fallback: prepend instructions
+    return Template(instructions + "\n\n" + source)
 
 
 # ============================================================
@@ -194,6 +313,7 @@ class RuleGenerator:
         code_type: str = "ICD-10",
         parallel_validators: bool = False,
         inheritance_context: Optional[str] = None,
+        level: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Стримит полный пайплайн генерации правила.
@@ -204,12 +324,16 @@ class RuleGenerator:
             code_type: Тип кода (ICD-10, CPT, etc.)
             parallel_validators: True для параллельного запуска Mentor+RedTeam
             inheritance_context: Контекст наследования (родительские правила)
+            level: Hierarchical level (meta_category, category, subcategory, code)
+                   If not provided, auto-detected from code structure.
 
         Yields:
             JSON SSE events
         """
         pipeline_start = time.time()
         self._inheritance_context = inheritance_context
+        # Auto-detect level if not provided
+        self._level = level or get_code_level(code, code_type)
 
         try:
             # 1. Build sources context
@@ -276,14 +400,26 @@ class RuleGenerator:
     async def _stream_draft(self, code: str, code_type: str) -> AsyncGenerator[str, None]:
         """Генерирует Draft."""
         step = "draft"
-        yield self._event(step, "status", "Generating draft...").to_json()
+
+        # Select prompt based on level
+        level = self._level
+        if level == "meta_category":
+            prompt_template = PROMPT_META_CATEGORY_DRAFT
+            level_info = "meta-category (comprehensive extraction)"
+        else:
+            # For non-meta-categories, inject level-specific instructions
+            prompt_template = inject_level_instructions(PROMPT_CODE_RULE_DRAFT, code, code_type)
+            has_children = has_descendants(code, code_type)
+            level_info = f"{level} ({'has descendants' if has_children else 'leaf code'})"
+
+        yield self._event(step, "status", f"Generating draft... [level: {level_info}]").to_json()
 
         # Build sources with optional inheritance context
         sources_text = self._sources_ctx.sources_text or ""
         if self._inheritance_context:
             sources_text = self._inheritance_context + "\n\n" + sources_text
 
-        prompt = PROMPT_CODE_RULE_DRAFT.substitute(
+        prompt = prompt_template.substitute(
             sources=sources_text,
             code=code,
             code_type=code_type,
@@ -910,15 +1046,27 @@ async def generate_rule_stream(
     document_ids: Optional[List[str]] = None,
     code_type: str = "ICD-10",
     parallel: bool = False,
-    thinking_budget: int = 10000
+    thinking_budget: int = 10000,
+    level: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Convenience function для стриминга генерации правила.
-    
+
+    Args:
+        code: Code to generate rules for
+        document_ids: Optional specific documents
+        code_type: ICD-10, CPT, HCPCS
+        parallel: Run validators in parallel
+        thinking_budget: Token budget for thinking
+        level: Hierarchical level (meta_category, category, subcategory, code)
+               Auto-detected if not provided.
+
     Usage:
         async for event in generate_rule_stream("E11.9"):
             yield f"data: {event}\\n\\n"
     """
     generator = RuleGenerator(thinking_budget=thinking_budget)
-    async for event in generator.stream_pipeline(code, document_ids, code_type, parallel):
+    async for event in generator.stream_pipeline(
+        code, document_ids, code_type, parallel, level=level
+    ):
         yield event
