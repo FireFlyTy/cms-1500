@@ -317,7 +317,15 @@ CITATION PROTOCOL:
 5. **Every citation MUST include the doc_id to identify the source document.**
 
 OUTPUT SECTIONS:
-Return exactly 5 sections using MARKDOWN formatting.
+Return sections using MARKDOWN formatting.
+
+**IF** a PARENT GUIDELINE RULE is provided in the source documents:
+- Start with "## INHERITANCE ANALYSIS" section (MANDATORY)
+- Include table showing disposition (KEEP/DROP/SPECIALIZE) for each parent rule
+- Then continue with sections 1-5 below
+
+**IF** no parent rule is provided:
+- Start directly with section 1
 
 ## 1. SUMMARY
 Summarize the guidelines regarding the analyzed code, synthesizing information from RELEVANT sources only.
@@ -330,21 +338,28 @@ List detailed acceptance and rejection criteria. Use bullet points.
 - **SEQUENCING**: "Code First" or "Use Additional Code" rules. [x]
 
 ## 3. INSTRUCTIONS
-Write the validation logic in strict pseudo-code steps.
+Write validation logic covering ALL criteria defined in Section 2.
+
+**STRICT 1:1 MAPPING REQUIRED:**
+You must iterate through EVERY single bullet point listed in "2. CRITERIA" and generate a corresponding logic rule here.
+- If a rule exists in CRITERIA, it MUST exist in INSTRUCTIONS.
+- Do NOT drop Exclusions. Every Exclusion must be converted into a negative logic instruction.
+- Do NOT group multiple criteria into one instruction. Keep them granular.
+
 *Format:*
 - **IF** <Condition> **THEN** <Action> [x]
 - **CHECK** <Document> **FOR** <Specific Data> [x]
 
-**CRITICAL: CRITERIA → INSTRUCTIONS mapping**
-Every rule in CRITERIA (EXCLUSION, SEQUENCING) MUST have a corresponding IF/THEN instruction here.
+**LOGIC CONVERSION TEMPLATES:**
+1. **For Inclusion:** IF <Condition present> THEN <Validate Code>.
+2. **For Exclusion:** IF <Excluded Condition present> THEN assign <Excluded Code> AND do NOT assign <This Code>.
+3. **For Sequencing:** IF <Condition A> AND <Condition B> THEN sequence <Code A> before <Code B>.
 
-| CRITERIA | INSTRUCTIONS |
-|----------|--------------|
-| EXCLUSION: Gestational Diabetes → O24.4, not Chapter E | IF gestational diabetes THEN use O24.4, NOT E-codes |
-| SEQUENCING: Pregnancy → O24 first, then E08-E13 | IF pregnant + condition THEN sequence O24 first |
+| CRITERIA Example (From Sec 2) | INSTRUCTION Example (Required in Sec 3) |
+|-------------------------------|-----------------------------------------|
+| EXCLUSION: Gestational Diabetes → O24.4 | IF gestational diabetes documented THEN assign O24.4 AND do NOT assign E-code |
+| SEQUENCING: Pregnancy → O24 first | IF pregnant + diabetes THEN sequence O24 first |
 | EXCLUSION: Incidental pregnancy → Z33.1 | IF pregnancy is incidental THEN use Z33.1, not Chapter 15 |
-
-Do NOT leave any CRITERIA rule without an actionable IF/THEN instruction!
 
 ## 4. REFERENCE
 Output citations EXACTLY as they appear in the source.
@@ -399,8 +414,12 @@ Do not evaluate your work. Just list findings.
    - Multiple locations per page? [YES/NO]
 5. **Excludes Notes Found**: <List with [doc_id] Page numbers or "None">
 6. **Code First Notes Found**: <List with [doc_id] Page numbers or "None">
-7. **Total Unique Citations Created**: <Count>
-8. **Page Number Verification**: Confirm all page numbers are from "## Page N" markers
+7. **Mapping Check** (CRITICAL):
+   - **Criteria Bullets Count**: <Count>
+   - **Instructions Rules Count**: <Count>
+   - **Are all Exclusions from Sec 2 converted to IF/THEN in Sec 3?**: [YES/NO]
+8. **Total Unique Citations Created**: <Count>
+9. **Page Number Verification**: Confirm all page numbers are from "## Page N" markers
 
 !!! STOP INSTRUCTION !!!
 DO NOT provide a verdict. This is a DRAFT.
@@ -426,20 +445,21 @@ This is a META-CATEGORY (root level). Rules you create will be inherited
 through the hierarchy chain.
 
 **Example hierarchy (ICD-10):**
+
 ```
 E (meta-category, YOU ARE HERE)
-  ├── E00 (category: iodine deficiency)
-  │     ├── E00.0 (subcategory)
-  │     ├── E00.1
-  │     └── E00.9
-  ├── E03 (category: hypothyroidism)
-  │     ├── E03.0
-  │     └── E03.9
-  └── E11 (category: type 2 diabetes)
-        ├── E11.2
-        ├── E11.6
-        │     └── E11.65
-        └── E11.9
+├── E00 (category: iodine deficiency)
+│     ├── E00.0 (subcategory)
+│     ├── E00.1
+│     └── E00.9
+├── E03 (category: hypothyroidism)
+│     ├── E03.0
+│     └── E03.9
+└── E11 (category: type 2 diabetes)
+├── E11.2
+├── E11.6
+│     └── E11.65
+└── E11.9
 ```
 
 **Inheritance flow:**
@@ -485,6 +505,7 @@ $description
 
 OBJECTIVE:
 Analyze ALL provided source documents to extract COMPREHENSIVE rules for this meta-category.
+**CRITICAL:** Pay special attention to "Excludes1" and "Excludes2" notes. These MUST be converted into explicit negative logic instructions in Section 3.
 
 === SOURCE USAGE REQUIREMENT ===
 
@@ -525,22 +546,28 @@ List criteria for ALL condition types in this category. Use bullet points.
 - **SEQUENCING**: Cross-chapter sequencing rules, "Code First", "Use Additional Code". [x]
 
 ## 3. INSTRUCTIONS
-Write validation logic covering ALL condition types.
+Write validation logic covering ALL condition types defined in Section 2.
+
+**STRICT 1:1 MAPPING REQUIRED:**
+You must iterate through EVERY single bullet point listed in "2. CRITERIA" and generate a corresponding logic rule here.
+- If a rule exists in CRITERIA, it MUST exist in INSTRUCTIONS.
+- Do NOT drop Exclusions. Every Exclusion must be converted into a negative logic instruction.
+- Do NOT group multiple criteria into one instruction. Keep them granular.
+
 *Format:*
 - **IF** <Condition> **THEN** <Action> [x]
 - **CHECK** <Document> **FOR** <Specific Data> [x]
 
-**CRITICAL: CRITERIA → INSTRUCTIONS mapping**
-Every rule in CRITERIA (EXCLUSION, SEQUENCING) MUST have a corresponding IF/THEN instruction here.
+**LOGIC CONVERSION TEMPLATES:**
+1. **For Inclusion:** IF <Condition present> THEN <Validate Code>.
+2. **For Exclusion:** IF <Excluded Condition present> THEN assign <Excluded Code> AND do NOT assign <This Category Code>.
+3. **For Sequencing:** IF <Condition A> AND <Condition B> THEN sequence <Code A> before <Code B>.
 
-| CRITERIA | INSTRUCTIONS |
-|----------|--------------|
-| EXCLUSION: Gestational Diabetes → O24.4, not Chapter E | IF gestational diabetes THEN use O24.4, NOT E-codes |
-| SEQUENCING: Pregnancy → O24 first, then E08-E13 | IF pregnant + condition THEN sequence O24 first |
+| CRITERIA Example (From Sec 2) | INSTRUCTION Example (Required in Sec 3) |
+|-------------------------------|-----------------------------------------|
+| EXCLUSION: Gestational Diabetes → O24.4 | IF gestational diabetes documented THEN assign O24.4 AND do NOT assign E-code |
+| SEQUENCING: Pregnancy → O24 first | IF pregnant + diabetes THEN sequence O24 first |
 | EXCLUSION: Incidental pregnancy → Z33.1 | IF pregnancy is incidental THEN use Z33.1, not Chapter 15 |
-
-Do NOT leave any CRITERIA rule without an actionable IF/THEN instruction!
-This is especially important for META-CATEGORIES where cross-chapter rules must be actionable.
 
 ## 4. REFERENCE
 Output citations EXACTLY as they appear in the source.
@@ -570,7 +597,11 @@ Copy text character-by-character. Preserve typos, spacing, punctuation.
    - Multiple locations per page? [YES/NO]
 5. **Cross-Chapter Rules Found**: <List with page numbers or "None">
 6. **Condition Types Covered**: <List all condition types included>
-7. **Total Unique Citations Created**: <Count>
+7. **Mapping Check** (CRITICAL):
+   - **Criteria Bullets Count**: <Count>
+   - **Instructions Rules Count**: <Count>
+   - **Are all Exclusions from Sec 2 converted to IF/THEN in Sec 3?**: [YES/NO]
+8. **Total Unique Citations Created**: <Count>
 
 !!! STOP INSTRUCTION !!!
 DO NOT provide a verdict. This is a DRAFT.
@@ -613,12 +644,18 @@ FOCUS AREAS:
 2. **Completeness:** Are all necessary steps included? Did the writer skip the "Review documentation" step?
 3. **Usability:** Is the IF/THEN logic easy to follow?
 4. **Source Coverage:** Did the draft use ALL provided source documents? Is any source ignored?
-5. **Citations validation:** 
+5. **Citations validation:**
    - **ONLY** process citations that appear in AUTOMATED CITATION CHECK above
    - If AUTOMATED CITATION CHECK is empty or says "No errors" → DO NOT propose any FIX_PAGE or FIX_DOC
    - For errors listed in AUTOMATED CITATION CHECK:
      * [PAGE_ERROR] → Create [FIX_PAGE] correction with the correct [doc_id] and page number
      * [DOC_ERROR] → Create [FIX_DOC] correction with the correct doc_id
+6. **CRITERIA → INSTRUCTIONS Mapping (CRITICAL):**
+   - Count all EXCLUSION and SEQUENCING bullets in Section 2 (CRITERIA)
+   - Count all IF/THEN rules in Section 3 (INSTRUCTIONS)
+   - For EACH EXCLUSION in CRITERIA: verify a corresponding negative IF/THEN exists in INSTRUCTIONS
+   - For EACH SEQUENCING rule in CRITERIA: verify a corresponding sequencing IF/THEN exists in INSTRUCTIONS
+   - If any CRITERIA rule is missing from INSTRUCTIONS → Create [ADD_STEP] correction
      * [PAGE_OVERFLOW] → Create [FIX_OVERFLOW] to split or cite page range
      * [AMBIGUOUS] → Create [FIX_AMBIGUOUS]: read the STATEMENT context, check each candidate page in each document, select the one that matches
      * [NOT_FOUND] → Flag as potential hallucination, recommend removal or request source
@@ -800,13 +837,19 @@ FOCUS AREAS:
 1. **Safety:** Does this violate any "Excludes" note in ANY source document?
 2. **Edge Cases:** Find a scenario where this instruction gives the WRONG code.
 3. **Conflicts:** Does it contradict the Guideline hierarchy? Do sources conflict with each other?
-4. **Cross-References (on cited pages only):** 
+4. **Cross-References (on cited pages only):**
    - Look at the pages cited in the DRAFT instructions (Section 4: REFERENCE)
    - On THOSE pages, check for phrases like "See section X.X.X", "See page N", "refer to..."
    - If found: FOLLOW the reference (may be in same or different source document), READ the target section, check if important rules are MISSING
    - If a cross-reference points to rules not covered → propose FIX RISK
    - **CRITICAL:** Always cite from the ACTUAL target section with [doc_id], not from the cross-reference text
-5. **Citations:**
+5. **CRITERIA → INSTRUCTIONS Mapping (CRITICAL):**
+   - Verify 1:1 mapping between CRITERIA rules and INSTRUCTIONS IF/THEN statements
+   - For EACH EXCLUSION in CRITERIA: verify a corresponding negative IF/THEN exists
+   - For EACH SEQUENCING rule in CRITERIA: verify a corresponding sequencing IF/THEN exists
+   - Missing mapping = HIGH RISK (rules in CRITERIA but not actionable in INSTRUCTIONS)
+   - If any CRITERIA rule is missing → Create [BLOCK_RISK] correction with risk_level "HIGH"
+6. **Citations:**
    - **ONLY** process citations that appear in AUTOMATED CITATION CHECK above
    - If AUTOMATED CITATION CHECK is empty or says "No errors" → DO NOT propose any FIX_PAGE or FIX_DOC
    - For errors listed in AUTOMATED CITATION CHECK:
@@ -1275,6 +1318,16 @@ Before writing ANY `[[doc_id:X | "anchor phrase"]]`, verify:
 
 ---
 ### OUTPUT STRUCTURE (MARKDOWN)
+
+**IF** the DRAFT contains "## INHERITANCE ANALYSIS" section:
+- Preserve it at the beginning of # ANSWER (before FINAL PROTOCOL)
+- Keep the Parent and disposition table intact
+
+## INHERITANCE ANALYSIS (if present in DRAFT)
+Parent: {parent_code}
+| Parent Rule | Disposition | Reason |
+|-------------|-------------|--------|
+(preserve from DRAFT)
 
 ## FINAL PROTOCOL: CODE VALIDATION
 
@@ -1908,6 +1961,12 @@ FOCUS AREAS:
    - For errors listed in AUTOMATED CITATION CHECK:
      * [PAGE_ERROR] → Create FIX_PAGE correction
      * [DOC_ERROR] → Create FIX_DOC correction
+6. **CRITERIA → INSTRUCTIONS Mapping (CRITICAL):**
+   - Count all EXCLUSION and SEQUENCING bullets in Section 2 (CRITERIA)
+   - Count all IF/THEN rules in Section 3 (INSTRUCTIONS)
+   - For EACH EXCLUSION in CRITERIA: verify a corresponding negative IF/THEN exists in INSTRUCTIONS
+   - For EACH SEQUENCING rule in CRITERIA: verify a corresponding sequencing IF/THEN exists in INSTRUCTIONS
+   - If any CRITERIA rule is missing from INSTRUCTIONS → Create [ADD_STEP] correction
      * [PAGE_OVERFLOW] → Create FIX_OVERFLOW correction
      * [AMBIGUOUS] → Create FIX_AMBIGUOUS correction
      * [NOT_FOUND] → Flag as potential hallucination
@@ -2067,7 +2126,13 @@ FOCUS AREAS:
    - If found: FOLLOW the reference (may be in same or different source document), READ the target section, check if important rules are MISSING
    - If a cross-reference points to rules not covered → propose FIX RISK
    - **CRITICAL:** Always cite from the ACTUAL target section with [doc_id], not from the cross-reference text
-5. **Citations:**
+5. **CRITERIA → INSTRUCTIONS Mapping (CRITICAL):**
+   - Verify 1:1 mapping between CRITERIA rules and INSTRUCTIONS IF/THEN statements
+   - For EACH EXCLUSION in CRITERIA: verify a corresponding negative IF/THEN exists
+   - For EACH SEQUENCING rule in CRITERIA: verify a corresponding sequencing IF/THEN exists
+   - Missing mapping = HIGH RISK (rules in CRITERIA but not actionable in INSTRUCTIONS)
+   - If any CRITERIA rule is missing → Create [BLOCK_RISK] correction with risk_level "HIGH"
+6. **Citations:**
    - **ONLY** process citations that appear in AUTOMATED CITATION CHECK above
    - If AUTOMATED CITATION CHECK is empty or says "No errors" → DO NOT propose any FIX_PAGE or FIX_DOC
    - For errors listed in AUTOMATED CITATION CHECK:

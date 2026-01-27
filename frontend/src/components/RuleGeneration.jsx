@@ -518,6 +518,22 @@ const RuleContent = ({ content, docMap }) => {
     cleanContent = cleanContent.substring(0, logIndex).trim();
   }
 
+  // Strip INHERITANCE ANALYSIS section - show from SUMMARY onwards
+  const summaryMatch = cleanContent.match(/^(#{1,3}\s*1\.\s*SUMMARY)/im);
+  if (summaryMatch) {
+    const summaryIndex = cleanContent.indexOf(summaryMatch[0]);
+    if (summaryIndex > 0) {
+      // Preserve # ANSWER header if present
+      const beforeSummary = cleanContent.substring(0, summaryIndex);
+      const answerMatch = beforeSummary.match(/^#\s*ANSWER\s*\n/im);
+      if (answerMatch) {
+        cleanContent = answerMatch[0] + cleanContent.substring(summaryIndex);
+      } else {
+        cleanContent = cleanContent.substring(summaryIndex);
+      }
+    }
+  }
+
   // Process text to replace citations with React components
   // Format: [[doc_id:page | "anchor"]]
   const processTextWithCitations = (text) => {
@@ -671,6 +687,22 @@ const RuleContentWithClickableCitations = ({ content, docMap, onCitationClick, c
   const logIndex = cleanContent.indexOf('TRACEABILITY LOG');
   if (logIndex > -1) {
     cleanContent = cleanContent.substring(0, logIndex).trim();
+  }
+
+  // Strip INHERITANCE ANALYSIS section - show from SUMMARY onwards
+  const summaryMatch = cleanContent.match(/^(#{1,3}\s*1\.\s*SUMMARY)/im);
+  if (summaryMatch) {
+    const summaryIndex = cleanContent.indexOf(summaryMatch[0]);
+    if (summaryIndex > 0) {
+      // Preserve # ANSWER header if present
+      const beforeSummary = cleanContent.substring(0, summaryIndex);
+      const answerMatch = beforeSummary.match(/^#\s*ANSWER\s*\n/im);
+      if (answerMatch) {
+        cleanContent = answerMatch[0] + cleanContent.substring(summaryIndex);
+      } else {
+        cleanContent = cleanContent.substring(summaryIndex);
+      }
+    }
   }
 
   const processTextWithCitations = (text) => {

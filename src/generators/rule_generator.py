@@ -955,11 +955,25 @@ class RuleGenerator:
         
         # Save generation log
         log_path = os.path.join(version_dir, "generation_log.json")
+
+        # Extract parent pattern from inheritance context if present
+        parent_pattern = None
+        if self._inheritance_context:
+            import re
+            match = re.search(r"=== PARENT GUIDELINE RULE: ([A-Z0-9.]+) ===", self._inheritance_context)
+            if match:
+                parent_pattern = match.group(1)
+
         log_data = {
             "code": result.code,
             "version": result.version,
             "created_at": result.created_at,
             "source_documents": result.source_documents,
+            "inheritance": {
+                "context_used": bool(self._inheritance_context),
+                "context_length": len(self._inheritance_context) if self._inheritance_context else 0,
+                "parent_pattern": parent_pattern
+            },
             "pipeline": {
                 step: {
                     "output": r.output,
